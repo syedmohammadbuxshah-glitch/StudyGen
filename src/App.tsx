@@ -3006,7 +3006,7 @@ export default function App() {
           StudyGen — Your Intelligent Study Assistant ✨ Reach for the stars!
         </p>
         <p className="mt-1 opacity-80 flex items-center justify-center gap-1">
-          <span>Powered by Gemini AI Studio • Made for student success and high-retention learning.</span>
+          <span>Powered by Gemini • Deployed from GitHub for student success and high-retention learning.</span>
           {/* Secret tiny touchpoint trigger at the absolute bottom of the page */}
           <button 
             onClick={() => {
