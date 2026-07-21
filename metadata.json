@@ -1,0 +1,6 @@
+{
+  "name": "StudyGen",
+  "description": "Your Intelligent AI-powered Study Assistant. Summarize notes, answer questions, generate quizzes, flashcards, study plans, and chat with a live voice agent.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
