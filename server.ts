@@ -10,7 +10,7 @@ import { WebSocketServer } from "ws";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Enable JSON body parsing with an increased limit to handle large uploaded text/notes and base64 images
 app.use(express.json({ limit: "25mb" }));
@@ -107,7 +107,7 @@ const ai = new GoogleGenAI({
   apiKey: apiKey || "",
   httpOptions: {
     headers: {
-      "User-Agent": "aistudio-build",
+      "User-Agent": "studygen-github-deploy",
     },
   },
 });
