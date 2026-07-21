@@ -5,9 +5,10 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    // Use relative asset URLs so the built app works from GitHub Pages
-    // project paths such as https://<user>.github.io/StudyGen/.
-    base: './',
+    // Serve assets from the repository path by default so GitHub Pages loads the
+    // JavaScript bundle reliably even when visitors open /StudyGen without a trailing slash.
+    // Set VITE_BASE_PATH=./ for relative assets on other static hosts.
+    base: process.env.VITE_BASE_PATH || '/StudyGen/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
