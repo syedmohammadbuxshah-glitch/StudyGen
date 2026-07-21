@@ -69,6 +69,19 @@ interface StudyPlan {
   generalSuccessTips: string[];
 }
 
+const safeParse = <T,>(value: string | null, fallback: T): T => {
+  if (!value) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(value) as T;
+  } catch (error) {
+    console.warn("Ignoring invalid StudyGen localStorage value:", error);
+    return fallback;
+  }
+};
+
 export default function App() {
   // Theme & App Settings
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -94,11 +107,7 @@ export default function App() {
   const [streakHistory, setStreakHistory] = useState<string[]>(() => {
     const saved = localStorage.getItem("studygen_streak_history");
     if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        return [];
-      }
+      return safeParse<string[]>(saved, []);
     }
     // Set some default past dates matching the default 3-day streak to look nice and populated!
     const history = [];
@@ -131,7 +140,7 @@ export default function App() {
   const [question, setQuestion] = useState<string>("");
   const [qaHistory, setQaHistory] = useState<Array<{ q: string; a: string }>>(() => {
     const saved = localStorage.getItem("studygen_qa_history");
-    return saved ? JSON.parse(saved) : [];
+    return safeParse<Array<{ q: string; a: string }>>(saved, []);
   });
   const [qaLoading, setQaLoading] = useState<boolean>(false);
   const [isDictatingQuestion, setIsDictatingQuestion] = useState<boolean>(false);
@@ -139,7 +148,7 @@ export default function App() {
   // Quiz State
   const [quizzes, setQuizzes] = useState<QuizQuestion[]>(() => {
     const saved = localStorage.getItem("studygen_quizzes");
-    return saved ? JSON.parse(saved) : [];
+    return safeParse<QuizQuestion[]>(saved, []);
   });
   const [currentQuizIndex, setCurrentQuizIndex] = useState<number>(0);
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, string>>({});
@@ -151,7 +160,7 @@ export default function App() {
   // Flashcard State
   const [flashcards, setFlashcards] = useState<Flashcard[]>(() => {
     const saved = localStorage.getItem("studygen_flashcards");
-    return saved ? JSON.parse(saved) : [];
+    return safeParse<Flashcard[]>(saved, []);
   });
   const [currentCardIndex, setCurrentCardIndex] = useState<number>(0);
   const [isFlipped, setIsFlipped] = useState<boolean>(false);
@@ -169,12 +178,12 @@ export default function App() {
   const [studyHours, setStudyHours] = useState<number>(2);
   const [studyPlan, setStudyPlan] = useState<StudyPlan | null>(() => {
     const saved = localStorage.getItem("studygen_study_plan");
-    return saved ? JSON.parse(saved) : null;
+    return safeParse<StudyPlan | null>(saved, null);
   });
   const [planLoading, setPlanLoading] = useState<boolean>(false);
   const [completedTasks, setCompletedTasks] = useState<Record<string, boolean>>(() => {
     const saved = localStorage.getItem("studygen_completed_tasks");
-    return saved ? JSON.parse(saved) : {};
+    return safeParse<Record<string, boolean>>(saved, {});
   });
 
   // UI Active Workspace Tab
@@ -183,7 +192,7 @@ export default function App() {
   // Authentication State
   const [user, setUser] = useState<{ username: string; role: string } | null>(() => {
     const saved = localStorage.getItem("studygen_auth_user");
-    return saved ? JSON.parse(saved) : null;
+    return safeParse<{ username: string; role: string } | null>(saved, null);
   });
 
   // Visual AI Image Analyzer State
