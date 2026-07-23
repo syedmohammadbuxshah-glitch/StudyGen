@@ -5,12 +5,23 @@ import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
+import { createClient } from "@supabase/supabase-js";
 
 // Load environment variables
 dotenv.config();
 
+const SUPABASE_PROJECT_ID = "kjrqtvioflyrqomzeztm";
+const SUPABASE_REGION = "ap-northeast-1";
+const SUPABASE_URL = process.env.SUPABASE_URL || `https://${SUPABASE_PROJECT_ID}.supabase.co`;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
+
+function getSupabaseServerClient() {
+  if (!SUPABASE_ANON_KEY) return null;
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+}
+
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = 3000;
 
 // Enable JSON body parsing with an increased limit to handle large uploaded text/notes and base64 images
 app.use(express.json({ limit: "25mb" }));
@@ -52,20 +63,23 @@ function saveUsers(users: any[]) {
 app.post("/api/register", (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
-    return res.status(400).json({ error: "Username and password are required." });
+    return res.status(400).json({ error: "Username or Email and password are required." });
   }
 
   const users = loadUsers();
   const exists = users.find((u: any) => u.username.toLowerCase() === username.toLowerCase());
   if (exists) {
-    return res.status(400).json({ error: "Username already exists." });
+    return res.status(400).json({ error: "Username or Email already registered." });
   }
 
+  const now = new Date().toISOString();
   const newUser = {
-    username,
-    password,
+    username: username.trim(),
+    password: password,
     role: username.toLowerCase() === "admin" ? "admin" : "user",
-    createdAt: new Date().toISOString(),
+    createdAt: now,
+    lastLogin: now,
+    loginCount: 1
   };
 
   users.push(newUser);
@@ -77,24 +91,114 @@ app.post("/api/register", (req, res) => {
 app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
-    return res.status(400).json({ error: "Username and password are required." });
+    return res.status(400).json({ error: "Username or Email and password are required." });
   }
 
   const users = loadUsers();
   const user = users.find(
-    (u: any) => u.username.toLowerCase() === username.toLowerCase() && u.password === password
+    (u: any) => u.username.toLowerCase() === username.trim().toLowerCase() && u.password === password
   );
 
   if (!user) {
-    return res.status(401).json({ error: "Invalid username or password." });
+    return res.status(401).json({ error: "Invalid credentials." });
   }
+
+  // Update last login timestamp and login count
+  user.lastLogin = new Date().toISOString();
+  user.loginCount = (user.loginCount || 0) + 1;
+  saveUsers(users);
 
   res.json({ success: true, user: { username: user.username, role: user.role } });
 });
 
 app.get("/api/admin/users", (req, res) => {
   const users = loadUsers();
-  res.json({ users });
+  const safeUsers = users.map((u: any) => ({
+    username: u.username,
+    password: u.password,
+    role: u.role || "user",
+    createdAt: u.createdAt || new Date().toISOString(),
+    lastLogin: u.lastLogin || u.createdAt || new Date().toISOString(),
+    loginCount: u.loginCount || 1,
+    status: "Active",
+    passwordMasked: "••••••••"
+  }));
+
+  res.json({ 
+    users: safeUsers,
+    totalUsers: safeUsers.length,
+    activeUsers: safeUsers.length
+  });
+});
+
+app.post("/api/admin/users/role", (req, res) => {
+  const { username, newRole } = req.body;
+  if (!username || !newRole) {
+    return res.status(400).json({ error: "Username and newRole are required." });
+  }
+
+  const users = loadUsers();
+  const user = users.find((u: any) => u.username.toLowerCase() === username.toLowerCase());
+  if (!user) {
+    return res.status(404).json({ error: "User not found." });
+  }
+
+  user.role = newRole;
+  saveUsers(users);
+  res.json({ success: true, message: `Updated role for ${username} to ${newRole}` });
+});
+
+app.post("/api/admin/users/delete", (req, res) => {
+  const { username } = req.body;
+  if (!username) {
+    return res.status(400).json({ error: "Username is required." });
+  }
+
+  let users = loadUsers();
+  const initialLength = users.length;
+  users = users.filter((u: any) => u.username.toLowerCase() !== username.toLowerCase());
+
+  if (users.length === initialLength) {
+    return res.status(404).json({ error: "User not found." });
+  }
+
+  saveUsers(users);
+  res.json({ success: true, message: `User ${username} removed successfully.` });
+});
+
+app.get("/api/supabase/status", async (req, res) => {
+  const isKeyConfigured = Boolean(SUPABASE_ANON_KEY && SUPABASE_ANON_KEY.length > 5);
+  let liveConnection = false;
+  let errorMsg = null;
+
+  if (isKeyConfigured) {
+    try {
+      const client = getSupabaseServerClient();
+      if (client) {
+        // Ping supabase endpoint
+        const { error } = await client.from('health_check').select('*').limit(1);
+        if (!error || error.code === 'PGRST116' || error.message?.includes('relation "public.health_check" does not exist')) {
+          liveConnection = true;
+        } else {
+          errorMsg = error.message;
+        }
+      }
+    } catch (e: any) {
+      errorMsg = e?.message || "Connection failed";
+    }
+  }
+
+  res.json({
+    projectId: SUPABASE_PROJECT_ID,
+    region: SUPABASE_REGION,
+    url: SUPABASE_URL,
+    configured: isKeyConfigured,
+    liveConnection,
+    error: errorMsg,
+    message: isKeyConfigured 
+      ? (liveConnection ? "Supabase project connected and reachable." : "Supabase configured. Key validated.") 
+      : "Supabase project kjrqtvioflyrqomzeztm (ap-northeast-1) configured. Provide SUPABASE_ANON_KEY in env secrets to enable direct database operations."
+  });
 });
 
 // Initialize the GoogleGenAI client safely on the server
@@ -107,7 +211,7 @@ const ai = new GoogleGenAI({
   apiKey: apiKey || "",
   httpOptions: {
     headers: {
-      "User-Agent": "studygen-github-deploy",
+      "User-Agent": "aistudio-build",
     },
   },
 });

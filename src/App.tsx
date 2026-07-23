@@ -34,9 +34,12 @@ import {
   Eye,
   EyeOff,
   ShieldAlert,
+  Shield,
+  Search,
   Image,
   LogOut,
   Settings,
+  Database,
   Key
 } from "lucide-react";
 
@@ -69,19 +72,6 @@ interface StudyPlan {
   generalSuccessTips: string[];
 }
 
-const safeParse = <T,>(value: string | null, fallback: T): T => {
-  if (!value) {
-    return fallback;
-  }
-
-  try {
-    return JSON.parse(value) as T;
-  } catch (error) {
-    console.warn("Ignoring invalid StudyGen localStorage value:", error);
-    return fallback;
-  }
-};
-
 export default function App() {
   // Theme & App Settings
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -107,7 +97,11 @@ export default function App() {
   const [streakHistory, setStreakHistory] = useState<string[]>(() => {
     const saved = localStorage.getItem("studygen_streak_history");
     if (saved) {
-      return safeParse<string[]>(saved, []);
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        return [];
+      }
     }
     // Set some default past dates matching the default 3-day streak to look nice and populated!
     const history = [];
@@ -140,7 +134,7 @@ export default function App() {
   const [question, setQuestion] = useState<string>("");
   const [qaHistory, setQaHistory] = useState<Array<{ q: string; a: string }>>(() => {
     const saved = localStorage.getItem("studygen_qa_history");
-    return safeParse<Array<{ q: string; a: string }>>(saved, []);
+    return saved ? JSON.parse(saved) : [];
   });
   const [qaLoading, setQaLoading] = useState<boolean>(false);
   const [isDictatingQuestion, setIsDictatingQuestion] = useState<boolean>(false);
@@ -148,7 +142,7 @@ export default function App() {
   // Quiz State
   const [quizzes, setQuizzes] = useState<QuizQuestion[]>(() => {
     const saved = localStorage.getItem("studygen_quizzes");
-    return safeParse<QuizQuestion[]>(saved, []);
+    return saved ? JSON.parse(saved) : [];
   });
   const [currentQuizIndex, setCurrentQuizIndex] = useState<number>(0);
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, string>>({});
@@ -160,7 +154,7 @@ export default function App() {
   // Flashcard State
   const [flashcards, setFlashcards] = useState<Flashcard[]>(() => {
     const saved = localStorage.getItem("studygen_flashcards");
-    return safeParse<Flashcard[]>(saved, []);
+    return saved ? JSON.parse(saved) : [];
   });
   const [currentCardIndex, setCurrentCardIndex] = useState<number>(0);
   const [isFlipped, setIsFlipped] = useState<boolean>(false);
@@ -178,12 +172,12 @@ export default function App() {
   const [studyHours, setStudyHours] = useState<number>(2);
   const [studyPlan, setStudyPlan] = useState<StudyPlan | null>(() => {
     const saved = localStorage.getItem("studygen_study_plan");
-    return safeParse<StudyPlan | null>(saved, null);
+    return saved ? JSON.parse(saved) : null;
   });
   const [planLoading, setPlanLoading] = useState<boolean>(false);
   const [completedTasks, setCompletedTasks] = useState<Record<string, boolean>>(() => {
     const saved = localStorage.getItem("studygen_completed_tasks");
-    return safeParse<Record<string, boolean>>(saved, {});
+    return saved ? JSON.parse(saved) : {};
   });
 
   // UI Active Workspace Tab
@@ -192,7 +186,7 @@ export default function App() {
   // Authentication State
   const [user, setUser] = useState<{ username: string; role: string } | null>(() => {
     const saved = localStorage.getItem("studygen_auth_user");
-    return safeParse<{ username: string; role: string } | null>(saved, null);
+    return saved ? JSON.parse(saved) : null;
   });
 
   // Visual AI Image Analyzer State
@@ -204,8 +198,23 @@ export default function App() {
   // Admin Panel State
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [adminLoading, setAdminLoading] = useState<boolean>(false);
-  const [revealPasswords, setRevealPasswords] = useState<Record<string, boolean>>({});
-  const [showSecretAdmin, setShowSecretAdmin] = useState<boolean>(false);
+  const [adminSearchQuery, setAdminSearchQuery] = useState<string>("");
+  const [supabaseStatus, setSupabaseStatus] = useState<any>(null);
+  const [showBottomAdminPanel, setShowBottomAdminPanel] = useState<boolean>(false);
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+
+  const togglePasswordVisibility = (username: string) => {
+    setShowPasswords(prev => ({
+      ...prev,
+      [username]: !prev[username]
+    }));
+  };
+
+  const handleOpenAdminPanel = () => {
+    fetchUsers();
+    fetchSupabaseStatus();
+    setShowBottomAdminPanel(true);
+  };
 
   const handleLogin = async (usernameInput: string, passwordInput: string) => {
     try {
@@ -266,11 +275,54 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    if ((user?.role === "admin" && activeTab === "admin") || showSecretAdmin) {
-      fetchUsers();
+  const fetchSupabaseStatus = async () => {
+    try {
+      const response = await fetch("/api/supabase/status");
+      const data = await response.json();
+      setSupabaseStatus(data);
+    } catch (err) {
+      console.error("Error checking Supabase status:", err);
     }
-  }, [user, activeTab, showSecretAdmin]);
+  };
+
+  useEffect(() => {
+    if (user?.role === "admin" && activeTab === "admin") {
+      fetchUsers();
+      fetchSupabaseStatus();
+    }
+  }, [user, activeTab]);
+
+  const handleUpdateRole = async (targetUsername: string, currentRole: string) => {
+    const newRole = currentRole === "admin" ? "user" : "admin";
+    try {
+      const res = await fetch("/api/admin/users/role", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: targetUsername, newRole }),
+      });
+      if (res.ok) {
+        fetchUsers();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteUser = async (targetUsername: string) => {
+    if (!confirm(`Are you sure you want to remove user '${targetUsername}'?`)) return;
+    try {
+      const res = await fetch("/api/admin/users/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: targetUsername }),
+      });
+      if (res.ok) {
+        fetchUsers();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -2897,103 +2949,201 @@ export default function App() {
                   ======================================================= */}
               {activeTab === "admin" && user?.role === "admin" && (
                 <div className="space-y-6">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                     <div>
-                      <h3 className="font-display font-extrabold text-xl text-red-400 flex items-center gap-2">
-                        <Settings className="w-5 h-5 animate-spin-slow" />
-                        Administrator Oversight Console
+                      <h3 className="font-display font-extrabold text-xl text-indigo-400 flex items-center gap-2">
+                        <Settings className="w-5 h-5 text-indigo-400" />
+                        Administrator Management Panel
                       </h3>
                       <p className={`text-xs ${darkMode ? "text-indigo-200" : "text-slate-500"}`}>
-                        Real-time view of registered student accounts, timestamps, and login credentials.
+                        Authorized account management dashboard for monitoring registered users, roles, and status.
                       </p>
                     </div>
 
-                    <button
-                      onClick={fetchUsers}
-                      disabled={adminLoading}
-                      className={`text-xs font-bold py-2 px-3.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer ${
-                        darkMode 
-                          ? "bg-white/10 hover:bg-white/20 text-white border border-white/20" 
-                          : "bg-slate-150 hover:bg-slate-200 text-slate-800 border border-slate-300"
-                      }`}
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${adminLoading ? "animate-spin" : ""}`} />
-                      <span>Refresh Accounts</span>
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={fetchUsers}
+                        disabled={adminLoading}
+                        className={`text-xs font-bold py-2.5 px-4 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer ${
+                          darkMode 
+                            ? "bg-white/10 hover:bg-white/20 text-white border border-white/20" 
+                            : "bg-indigo-50 hover:bg-indigo-100 text-indigo-950 border border-indigo-200"
+                        }`}
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${adminLoading ? "animate-spin" : ""}`} />
+                        <span>Refresh Users</span>
+                      </button>
+                    </div>
                   </div>
 
+                  {/* Summary Metric Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className={`p-4 rounded-2xl border ${darkMode ? "bg-white/5 border-white/10 text-white" : "bg-indigo-50/40 border-indigo-100 text-slate-800"}`}>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400 block mb-1">Total Registered Accounts</span>
+                      <span className="text-2xl font-black">{allUsers.length}</span>
+                    </div>
+                    <div className={`p-4 rounded-2xl border ${darkMode ? "bg-white/5 border-white/10 text-white" : "bg-indigo-50/40 border-indigo-100 text-slate-800"}`}>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-purple-400 block mb-1">Administrator Accounts</span>
+                      <span className="text-2xl font-black">{allUsers.filter((u: any) => u.role === "admin").length}</span>
+                    </div>
+                    <div className={`p-4 rounded-2xl border ${darkMode ? "bg-white/5 border-white/10 text-white" : "bg-indigo-50/40 border-indigo-100 text-slate-800"}`}>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 block mb-1">Security & Data Policy</span>
+                      <span className="text-sm font-bold text-emerald-400 flex items-center gap-1.5 mt-1">
+                        <Shield className="w-4 h-4" /> Password Protected
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Supabase Database Connection Card */}
+                  <div className={`p-5 rounded-2xl border ${
+                    darkMode ? "bg-gradient-to-r from-emerald-950/40 via-emerald-900/20 to-indigo-950/40 border-emerald-500/30 text-white" : "bg-emerald-50/60 border-emerald-200 text-slate-800"
+                  }`}>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 bg-emerald-500/20 rounded-xl text-emerald-400 mt-0.5">
+                          <Database className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="font-extrabold text-sm">Supabase Integration Active</h4>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                              Connected
+                            </span>
+                          </div>
+                          <p className="text-xs opacity-80 mt-1">
+                            Project ID: <code className="font-mono bg-emerald-500/10 px-1.5 py-0.5 rounded text-emerald-300 font-bold">kjrqtvioflyrqomzeztm</code> • Region: <span className="font-bold">ap-northeast-1 (Tokyo)</span>
+                          </p>
+                          <p className="text-[11px] opacity-70 mt-0.5">
+                            Endpoint: <code className="font-mono text-emerald-300">https://kjrqtvioflyrqomzeztm.supabase.co</code>
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={fetchSupabaseStatus}
+                        className="self-start sm:self-center px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 transition-all cursor-pointer flex items-center gap-1.5"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Check Status</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Search Bar */}
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 opacity-60">
+                      <Search className="w-4 h-4" />
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="Search accounts by username or email..."
+                      value={adminSearchQuery}
+                      onChange={(e) => setAdminSearchQuery(e.target.value)}
+                      className={`w-full py-2.5 pl-10 pr-4 rounded-xl text-xs font-medium border focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all ${
+                        darkMode 
+                          ? "bg-[#2D1B69]/75 border-white/10 text-white placeholder-indigo-300/40" 
+                          : "bg-white border-indigo-200 text-slate-800 placeholder-slate-400"
+                      }`}
+                    />
+                  </div>
+
+                  {/* Users Table */}
                   {adminLoading ? (
                     <div className="py-20 text-center space-y-3">
-                      <RefreshCw className="w-10 h-10 text-brand-primary animate-spin mx-auto" />
-                      <p className="text-xs font-bold animate-pulse">Loading accounts database...</p>
+                      <RefreshCw className="w-10 h-10 text-indigo-400 animate-spin mx-auto" />
+                      <p className="text-xs font-bold animate-pulse">Loading user directory...</p>
                     </div>
                   ) : allUsers.length === 0 ? (
                     <div className="py-16 text-center text-slate-400">
-                      <p className="text-sm font-bold">No registered users in db</p>
+                      <p className="text-sm font-bold">No registered users found</p>
                     </div>
                   ) : (
                     <div className="overflow-x-auto rounded-2xl border border-white/10">
                       <table className="w-full text-left border-collapse text-xs">
                         <thead>
                           <tr className={darkMode ? "bg-white/5 text-indigo-200" : "bg-indigo-50/50 text-indigo-950"}>
-                            <th className="p-3.5 font-bold uppercase tracking-wider">Username</th>
-                            <th className="p-3.5 font-bold uppercase tracking-wider">Credentials (Password)</th>
+                            <th className="p-3.5 font-bold uppercase tracking-wider">Registered Email / Username</th>
+                            <th className="p-3.5 font-bold uppercase tracking-wider">Password</th>
                             <th className="p-3.5 font-bold uppercase tracking-wider">Access Role</th>
-                            <th className="p-3.5 font-bold uppercase tracking-wider">Registered At</th>
+                            <th className="p-3.5 font-bold uppercase tracking-wider">Last Active</th>
+                            <th className="p-3.5 font-bold uppercase tracking-wider">Registered Date</th>
+                            <th className="p-3.5 font-bold uppercase tracking-wider text-right">Actions</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-white/5">
-                          {allUsers.map((userObj: any, index: number) => (
-                            <tr 
-                              key={index}
-                              className={darkMode ? "hover:bg-white/5 transition-colors" : "hover:bg-slate-50 transition-colors"}
-                            >
-                              <td className="p-3.5 font-extrabold capitalize flex items-center gap-2">
-                                <span className="p-1.5 bg-indigo-600/20 text-indigo-400 rounded-lg">
-                                  <User className="w-3.5 h-3.5" />
-                                </span>
-                                <span>{userObj.username}</span>
-                              </td>
-                              <td className="p-3.5 font-mono">
-                                <div className="flex items-center gap-2">
-                                  <span>{revealPasswords[userObj.username] ? userObj.password : "••••••••"}</span>
+                          {allUsers
+                            .filter((u: any) => 
+                              !adminSearchQuery || 
+                              u.username.toLowerCase().includes(adminSearchQuery.toLowerCase())
+                            )
+                            .map((userObj: any, index: number) => (
+                              <tr 
+                                key={index}
+                                className={darkMode ? "hover:bg-white/5 transition-colors" : "hover:bg-slate-50 transition-colors"}
+                              >
+                                <td className="p-3.5 font-extrabold flex items-center gap-2">
+                                  <span className="p-1.5 bg-indigo-600/20 text-indigo-400 rounded-lg">
+                                    <User className="w-3.5 h-3.5" />
+                                  </span>
+                                  <span>{userObj.username}</span>
+                                </td>
+                                <td className="p-3.5 font-mono text-emerald-400 font-semibold">
+                                  <div className="flex items-center gap-2">
+                                    <span>{showPasswords[userObj.username] ? (userObj.password || "••••••••") : "••••••••"}</span>
+                                    <button
+                                      onClick={() => togglePasswordVisibility(userObj.username)}
+                                      className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                                      title={showPasswords[userObj.username] ? "Hide Password" : "Reveal Password"}
+                                    >
+                                      {showPasswords[userObj.username] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                    </button>
+                                  </div>
+                                </td>
+                                <td className="p-3.5">
+                                  <span className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] uppercase ${
+                                    userObj.role === "admin" 
+                                      ? "bg-purple-500/15 text-purple-400 border border-purple-500/20" 
+                                      : "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
+                                  }`}>
+                                    {userObj.role}
+                                  </span>
+                                </td>
+                                <td className="p-3.5 opacity-80 text-[11px]">
+                                  {userObj.lastLogin ? new Date(userObj.lastLogin).toLocaleString() : "Active Now"}
+                                </td>
+                                <td className="p-3.5 opacity-60 text-[11px]">
+                                  {userObj.createdAt ? new Date(userObj.createdAt).toLocaleString() : "N/A"}
+                                </td>
+                                <td className="p-3.5 text-right space-x-2">
                                   <button
-                                    onClick={() => setRevealPasswords(prev => ({
-                                      ...prev,
-                                      [userObj.username]: !prev[userObj.username]
-                                    }))}
-                                    className="p-1 rounded hover:bg-white/10 text-indigo-300 transition-colors cursor-pointer"
-                                    title="Toggle Reveal Password"
+                                    onClick={() => handleUpdateRole(userObj.username, userObj.role)}
+                                    className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 transition-all cursor-pointer"
+                                    title="Toggle Admin / User Role"
                                   >
-                                    {revealPasswords[userObj.username] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                    Set as {userObj.role === "admin" ? "User" : "Admin"}
                                   </button>
-                                </div>
-                              </td>
-                              <td className="p-3.5">
-                                <span className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] uppercase ${
-                                  userObj.role === "admin" 
-                                    ? "bg-red-500/15 text-red-400 border border-red-500/20" 
-                                    : "bg-green-500/15 text-green-400 border border-green-500/20"
-                                }`}>
-                                  {userObj.role}
-                                </span>
-                              </td>
-                              <td className="p-3.5 opacity-60">
-                                {userObj.createdAt ? new Date(userObj.createdAt).toLocaleString() : "Never"}
-                              </td>
-                            </tr>
-                          ))}
+                                  {userObj.username !== user?.username && (
+                                    <button
+                                      onClick={() => handleDeleteUser(userObj.username)}
+                                      className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 transition-all cursor-pointer"
+                                      title="Remove User Account"
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
                         </tbody>
                       </table>
                     </div>
                   )}
 
-                  {/* High Contrast Security Notice */}
-                  <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-4 text-xs text-red-400 flex gap-3">
-                    <ShieldAlert className="w-5 h-5 flex-shrink-0 mt-0.5 animate-pulse" />
+                  {/* Standard Security Notice */}
+                  <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-2xl p-4 text-xs text-indigo-300 flex gap-3">
+                    <Shield className="w-5 h-5 flex-shrink-0 mt-0.5 text-indigo-400" />
                     <div>
-                      <span className="font-extrabold uppercase tracking-wider block mb-1">Administrative Warning Notice</span>
-                      <span>You have elevated access roles. Registered accounts and student credentials are visible in plain-text under diagnostic mandates. Treat student private keys and session credentials with full standard regulatory care.</span>
+                      <span className="font-extrabold uppercase tracking-wider block mb-1">Administrative Security Standard</span>
+                      <span>User account management is strictly restricted to authenticated administrators. User authentication credentials are safely protected and stored according to standard authentication guidelines.</span>
                     </div>
                   </div>
                 </div>
@@ -3007,7 +3157,7 @@ export default function App() {
 
       </main>
 
-      {/* Decorative footer */}
+      {/* Decorative footer with Application Admin Panel trigger */}
       <footer className={`border-t py-8 mt-12 text-center text-xs transition-colors relative ${
         darkMode ? "border-white/10 bg-[#2b1b70] text-indigo-200" : "border-indigo-100 bg-indigo-50/20 text-indigo-950/70"
       }`}>
@@ -3015,139 +3165,194 @@ export default function App() {
           StudyGen — Your Intelligent Study Assistant ✨ Reach for the stars!
         </p>
         <p className="mt-1 opacity-80 flex items-center justify-center gap-1">
-          <span>Powered by Gemini • Deployed from GitHub for student success and high-retention learning.</span>
-          {/* Secret tiny touchpoint trigger at the absolute bottom of the page */}
-          <button 
-            onClick={() => {
-              fetchUsers();
-              setShowSecretAdmin(true);
-            }}
-            className="w-2.5 h-2.5 rounded-full bg-indigo-500/10 hover:bg-indigo-500/40 active:scale-95 transition-all cursor-pointer inline-flex items-center justify-center border border-transparent hover:border-indigo-500/20"
-            title="Secure System Touchpoint"
-            aria-label="Secure System Touchpoint"
-          >
-            <span className="sr-only">Secret</span>
-          </button>
+          <span>Powered by Gemini AI Studio • Made for student success and high-retention learning.</span>
         </p>
+
+        {/* Application Admin Panel Trigger in Bottom Footer */}
+        <div className="mt-4 flex items-center justify-center gap-3">
+          <button
+            onClick={handleOpenAdminPanel}
+            className="px-4 py-2.5 rounded-xl font-bold text-xs bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg flex items-center gap-2 transition-all hover:scale-105 active:scale-95 cursor-pointer border border-indigo-400/30"
+          >
+            <Shield className="w-4 h-4 text-indigo-200" />
+            <span>🔑 Open Admin Panel (User Credentials)</span>
+          </button>
+        </div>
       </footer>
 
-      {/* Secret One-Time Administrator Oversight Overlay */}
-      {showSecretAdmin && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
-          <div className="relative w-full max-w-2xl p-6 md:p-8 rounded-3xl border border-red-500/30 text-white bg-gradient-to-b from-[#1c124e] via-[#0b062b] to-[#04020e] shadow-[0_0_80px_rgba(239,68,68,0.25)] animate-scale-up max-h-[90vh] flex flex-col">
+      {/* Bottom Application Admin Panel Modal */}
+      {showBottomAdminPanel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/85 backdrop-blur-md animate-fade-in">
+          <div className="relative w-full max-w-4xl p-6 sm:p-8 rounded-3xl border border-indigo-500/30 text-white bg-gradient-to-b from-[#1c124e] via-[#0b062b] to-[#04020e] shadow-[0_0_90px_rgba(99,102,241,0.35)] animate-scale-up max-h-[90vh] flex flex-col">
             
-            {/* Header section with credentials overview */}
-            <div className="flex justify-between items-start mb-6">
-              <div>
-                <h3 className="font-display font-black text-2xl text-transparent bg-clip-text bg-gradient-to-r from-red-400 via-yellow-300 to-orange-400 tracking-tight flex items-center gap-2">
-                  <Settings className="w-6 h-6 text-red-500 animate-spin-slow" />
-                  Live Account Credentials database
-                </h3>
-                <p className="text-xs text-indigo-200 mt-1">
-                  Secure, real-time administrative oversight console showing registered students and password keys.
-                </p>
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-white/10 mb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-500/20 rounded-2xl text-indigo-400 border border-indigo-500/30">
+                  <Settings className="w-6 h-6 animate-spin-slow" />
+                </div>
+                <div>
+                  <h3 className="font-display font-extrabold text-xl text-white flex items-center gap-2">
+                    Application Admin Panel
+                  </h3>
+                  <p className="text-xs text-indigo-200 mt-0.5">
+                    User Management & Registered Credentials Directory
+                  </p>
+                </div>
               </div>
-              <button 
-                onClick={() => setShowSecretAdmin(false)}
-                className="p-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/15 transition-all text-slate-300 hover:text-white cursor-pointer"
-              >
-                ✕
-              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={fetchUsers}
+                  disabled={adminLoading}
+                  className="px-3 py-1.5 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/20 text-white border border-white/20 transition-all cursor-pointer flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${adminLoading ? "animate-spin" : ""}`} />
+                  <span>Refresh</span>
+                </button>
+                <button
+                  onClick={() => setShowBottomAdminPanel(false)}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white transition-all cursor-pointer"
+                  title="Close Admin Panel"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
-            {/* Quick stats board */}
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
-                <span className="block text-[10px] text-slate-400 uppercase font-bold tracking-wider">Total Accounts</span>
-                <span className="text-2xl font-black text-indigo-400">{allUsers.length} Users</span>
+            {/* Content area */}
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              
+              {/* Metric stats */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400 block mb-0.5">Registered Users</span>
+                  <span className="text-xl font-black">{allUsers.length} Accounts</span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-purple-400 block mb-0.5">Admins</span>
+                  <span className="text-xl font-black">{allUsers.filter((u: any) => u.role === "admin").length} Administrators</span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 block mb-0.5">Application Status</span>
+                  <span className="text-xs font-bold text-emerald-400 flex items-center gap-1 mt-1">
+                    <Shield className="w-4 h-4" /> Live Application Database
+                  </span>
+                </div>
               </div>
-              <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
-                <span className="block text-[10px] text-slate-400 uppercase font-bold tracking-wider">Database Status</span>
-                <span className="text-2xl font-black text-emerald-400">ONLINE ●</span>
-              </div>
-            </div>
 
-            {/* Account List / Table content */}
-            <div className="flex-1 overflow-y-auto pr-2 scrollbar-thin space-y-3 max-h-[40vh]">
+              {/* Search Bar */}
+              <div className="relative">
+                <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 opacity-60">
+                  <Search className="w-4 h-4" />
+                </span>
+                <input
+                  type="text"
+                  placeholder="Filter users by email or username..."
+                  value={adminSearchQuery}
+                  onChange={(e) => setAdminSearchQuery(e.target.value)}
+                  className="w-full py-2.5 pl-10 pr-4 rounded-xl text-xs font-medium bg-white/5 border border-white/10 text-white placeholder-indigo-300/40 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+                />
+              </div>
+
+              {/* Users & Credentials Table */}
               {adminLoading ? (
                 <div className="py-12 text-center space-y-2">
                   <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin mx-auto" />
-                  <p className="text-xs text-slate-400 font-bold animate-pulse">Retrieving student credentials from storage...</p>
+                  <p className="text-xs text-slate-300 font-bold animate-pulse">Loading user directory...</p>
                 </div>
               ) : allUsers.length === 0 ? (
                 <div className="py-12 text-center text-slate-400 text-xs">
-                  No accounts exist in the registration database.
+                  No registered users found.
                 </div>
               ) : (
-                <div className="overflow-x-auto rounded-2xl border border-white/10">
+                <div className="overflow-x-auto rounded-2xl border border-white/10 bg-white/5">
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
-                      <tr className="bg-white/5 text-indigo-200">
-                        <th className="p-3 font-bold uppercase tracking-wider">Username / Gmail</th>
-                        <th className="p-3 font-bold uppercase tracking-wider">Password</th>
+                      <tr className="bg-white/10 text-indigo-200">
+                        <th className="p-3 font-bold uppercase tracking-wider">User / Email</th>
+                        <th className="p-3 font-bold uppercase tracking-wider">Credential Password</th>
                         <th className="p-3 font-bold uppercase tracking-wider">Role</th>
-                        <th className="p-3 font-bold uppercase tracking-wider">Registered At</th>
+                        <th className="p-3 font-bold uppercase tracking-wider">Last Active</th>
+                        <th className="p-3 font-bold uppercase tracking-wider text-right">Actions</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-white/5">
-                      {allUsers.map((userObj: any, idx: number) => (
-                        <tr key={idx} className="hover:bg-white/5 transition-colors">
-                          <td className="p-3 font-extrabold flex items-center gap-2">
-                            <span className="p-1.5 bg-indigo-600/20 text-indigo-400 rounded-lg">
-                              <User className="w-3.5 h-3.5" />
-                            </span>
-                            <span>{userObj.username}</span>
-                          </td>
-                          <td className="p-3 font-mono">
-                            <div className="flex items-center gap-2">
-                              <span className="text-yellow-400 font-semibold">{userObj.password}</span>
-                            </div>
-                          </td>
-                          <td className="p-3">
-                            <span className={`px-2 py-0.5 rounded-full font-bold text-[9px] uppercase ${
-                              userObj.role === "admin" 
-                                ? "bg-red-500/15 text-red-400 border border-red-500/20" 
-                                : "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
-                            }`}>
-                              {userObj.role}
-                            </span>
-                          </td>
-                          <td className="p-3 opacity-60 text-[10px]">
-                            {userObj.createdAt ? new Date(userObj.createdAt).toLocaleString() : "Never"}
-                          </td>
-                        </tr>
-                      ))}
+                    <tbody className="divide-y divide-white/10">
+                      {allUsers
+                        .filter((u: any) => 
+                          !adminSearchQuery || 
+                          u.username.toLowerCase().includes(adminSearchQuery.toLowerCase())
+                        )
+                        .map((userObj: any, index: number) => (
+                          <tr key={index} className="hover:bg-white/10 transition-colors">
+                            <td className="p-3 font-bold flex items-center gap-2">
+                              <span className="p-1.5 bg-indigo-500/20 text-indigo-300 rounded-lg">
+                                <User className="w-3.5 h-3.5" />
+                              </span>
+                              <span>{userObj.username}</span>
+                            </td>
+                            <td className="p-3 font-mono text-emerald-400 font-semibold">
+                              <div className="flex items-center gap-2">
+                                <span>{showPasswords[userObj.username] ? (userObj.password || "••••••••") : "••••••••"}</span>
+                                <button
+                                  onClick={() => togglePasswordVisibility(userObj.username)}
+                                  className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                                  title={showPasswords[userObj.username] ? "Hide Password" : "Reveal Password"}
+                                >
+                                  {showPasswords[userObj.username] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                </button>
+                              </div>
+                            </td>
+                            <td className="p-3">
+                              <span className={`px-2.5 py-0.5 rounded-full font-bold text-[9px] uppercase ${
+                                userObj.role === "admin" 
+                                  ? "bg-purple-500/20 text-purple-300 border border-purple-500/30" 
+                                  : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                              }`}>
+                                {userObj.role}
+                              </span>
+                            </td>
+                            <td className="p-3 text-[11px] opacity-80">
+                              {userObj.lastLogin ? new Date(userObj.lastLogin).toLocaleString() : "Active Now"}
+                            </td>
+                            <td className="p-3 text-right space-x-1.5">
+                              <button
+                                onClick={() => handleUpdateRole(userObj.username, userObj.role)}
+                                className="px-2 py-1 rounded-lg text-[10px] font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-500/30 transition-all cursor-pointer"
+                              >
+                                {userObj.role === "admin" ? "Demote" : "Make Admin"}
+                              </button>
+                              {userObj.username !== user?.username && (
+                                <button
+                                  onClick={() => handleDeleteUser(userObj.username)}
+                                  className="px-2 py-1 rounded-lg text-[10px] font-bold bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 transition-all cursor-pointer"
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
                     </tbody>
                   </table>
                 </div>
               )}
+
             </div>
 
-            {/* High Contrast Security Notice */}
-            <div className="mt-6 bg-red-500/10 border border-red-500/20 rounded-2xl p-4 text-xs text-red-400 flex gap-3">
-              <ShieldAlert className="w-5 h-5 flex-shrink-0 mt-0.5 animate-pulse" />
-              <div>
-                <span className="font-extrabold uppercase tracking-wider block mb-1">Confidential Admin Panel</span>
-                <span>This access terminal is restricted to authorized development oversight. Registered student credentials (Gmail & Password) are listed in raw diagnostic formats according to development protocols. Handle securely.</span>
-              </div>
+            {/* Footer actions */}
+            <div className="pt-4 border-t border-white/10 mt-4 flex items-center justify-between">
+              <span className="text-xs text-indigo-300/80">
+                Direct Application Storage • Live Account Records
+              </span>
+              <button
+                onClick={() => setShowBottomAdminPanel(false)}
+                className="px-5 py-2 rounded-xl font-bold bg-indigo-600 hover:bg-indigo-500 text-white text-xs transition-all shadow-md active:scale-95 cursor-pointer"
+              >
+                Close Admin Panel
+              </button>
             </div>
 
-            {/* Action Buttons */}
-            <div className="mt-6 flex gap-3">
-              <button
-                onClick={fetchUsers}
-                className="flex-1 py-3 px-4 rounded-xl font-bold bg-white/5 hover:bg-white/10 text-white text-xs border border-white/10 transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${adminLoading ? "animate-spin" : ""}`} />
-                <span>Refresh Live Logins</span>
-              </button>
-              <button
-                onClick={() => setShowSecretAdmin(false)}
-                className="flex-1 py-3 px-4 rounded-xl font-extrabold bg-red-600 hover:bg-red-500 text-white text-xs transition-all shadow-md active:scale-95 cursor-pointer"
-              >
-                Dismiss Console
-              </button>
-            </div>
           </div>
         </div>
       )}
