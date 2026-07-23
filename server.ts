@@ -111,7 +111,70 @@ app.post("/api/login", (req, res) => {
   res.json({ success: true, user: { username: user.username, role: user.role } });
 });
 
+// Master Admin PIN configuration
+const ADMIN_PIN_FILE_PATH = path.join(process.cwd(), "admin_pin.json");
+
+function getAdminPin() {
+  try {
+    if (fs.existsSync(ADMIN_PIN_FILE_PATH)) {
+      const data = JSON.parse(fs.readFileSync(ADMIN_PIN_FILE_PATH, "utf8"));
+      return data.pin || "admin123";
+    }
+  } catch (e) {}
+  return "admin123";
+}
+
+function setAdminPin(newPin: string) {
+  try {
+    fs.writeFileSync(ADMIN_PIN_FILE_PATH, JSON.stringify({ pin: newPin }), "utf8");
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function verifyAdminAccess(req: express.Request): boolean {
+  const providedKey = (req.headers["x-admin-key"] as string) || req.query.adminKey as string || req.body?.adminKey;
+  if (!providedKey) return false;
+  const currentPin = getAdminPin();
+  return providedKey === currentPin;
+}
+
+app.post("/api/admin/verify-pin", (req, res) => {
+  const { pin } = req.body;
+  if (!pin) {
+    return res.status(400).json({ error: "PIN or Master Key is required." });
+  }
+  const currentPin = getAdminPin();
+
+  if (pin === currentPin) {
+    return res.json({ success: true, message: "Master Admin key verified." });
+  }
+  return res.status(401).json({ error: "Access Denied: Incorrect Master Admin Key." });
+});
+
+app.post("/api/admin/change-pin", (req, res) => {
+  const { currentPin, newPin } = req.body;
+  if (!currentPin || !newPin) {
+    return res.status(400).json({ error: "Current PIN and new PIN are required." });
+  }
+  const activePin = getAdminPin();
+  if (currentPin !== activePin) {
+    return res.status(401).json({ error: "Current Admin PIN is incorrect." });
+  }
+  if (newPin.trim().length < 4) {
+    return res.status(400).json({ error: "New PIN must be at least 4 characters." });
+  }
+
+  setAdminPin(newPin.trim());
+  res.json({ success: true, message: "Admin Master Security PIN updated successfully." });
+});
+
 app.get("/api/admin/users", (req, res) => {
+  if (!verifyAdminAccess(req)) {
+    return res.status(403).json({ error: "Access Denied: Master Admin authorization required." });
+  }
+
   const users = loadUsers();
   const safeUsers = users.map((u: any) => ({
     username: u.username,
@@ -132,6 +195,10 @@ app.get("/api/admin/users", (req, res) => {
 });
 
 app.post("/api/admin/users/role", (req, res) => {
+  if (!verifyAdminAccess(req)) {
+    return res.status(403).json({ error: "Access Denied: Master Admin authorization required." });
+  }
+
   const { username, newRole } = req.body;
   if (!username || !newRole) {
     return res.status(400).json({ error: "Username and newRole are required." });
@@ -149,6 +216,10 @@ app.post("/api/admin/users/role", (req, res) => {
 });
 
 app.post("/api/admin/users/delete", (req, res) => {
+  if (!verifyAdminAccess(req)) {
+    return res.status(403).json({ error: "Access Denied: Master Admin authorization required." });
+  }
+
   const { username } = req.body;
   if (!username) {
     return res.status(400).json({ error: "Username is required." });
@@ -164,6 +235,60 @@ app.post("/api/admin/users/delete", (req, res) => {
 
   saveUsers(users);
   res.json({ success: true, message: `User ${username} removed successfully.` });
+});
+
+app.post("/api/admin/users/create", (req, res) => {
+  if (!verifyAdminAccess(req)) {
+    return res.status(403).json({ error: "Access Denied: Master Admin authorization required." });
+  }
+
+  const { username, password, role } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: "Username and password are required." });
+  }
+
+  const users = loadUsers();
+  const exists = users.find((u: any) => u.username.toLowerCase() === username.trim().toLowerCase());
+  if (exists) {
+    return res.status(400).json({ error: "Username or Email already exists." });
+  }
+
+  const now = new Date().toISOString();
+  const newUser = {
+    username: username.trim(),
+    password: password,
+    role: role || "user",
+    createdAt: now,
+    lastLogin: now,
+    loginCount: 0
+  };
+
+  users.push(newUser);
+  saveUsers(users);
+
+  res.json({ success: true, message: "User created successfully", user: newUser });
+});
+
+app.post("/api/admin/users/password", (req, res) => {
+  if (!verifyAdminAccess(req)) {
+    return res.status(403).json({ error: "Access Denied: Master Admin authorization required." });
+  }
+
+  const { username, newPassword } = req.body;
+  if (!username || !newPassword) {
+    return res.status(400).json({ error: "Username and new password are required." });
+  }
+
+  const users = loadUsers();
+  const user = users.find((u: any) => u.username.toLowerCase() === username.trim().toLowerCase());
+  if (!user) {
+    return res.status(404).json({ error: "User not found." });
+  }
+
+  user.password = newPassword;
+  saveUsers(users);
+
+  res.json({ success: true, message: `Password updated for ${username}.` });
 });
 
 app.get("/api/supabase/status", async (req, res) => {

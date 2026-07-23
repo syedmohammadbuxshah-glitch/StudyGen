@@ -40,7 +40,9 @@ import {
   LogOut,
   Settings,
   Database,
-  Key
+  Key,
+  Copy,
+  UserPlus
 } from "lucide-react";
 
 // Types
@@ -195,13 +197,33 @@ export default function App() {
   const [imageAnalysis, setImageAnalysis] = useState<string>("");
   const [imageLoading, setImageLoading] = useState<boolean>(false);
 
-  // Admin Panel State
+  // Admin Panel State & Security Authentication
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [adminLoading, setAdminLoading] = useState<boolean>(false);
   const [adminSearchQuery, setAdminSearchQuery] = useState<string>("");
   const [supabaseStatus, setSupabaseStatus] = useState<any>(null);
   const [showBottomAdminPanel, setShowBottomAdminPanel] = useState<boolean>(false);
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+  const [revealAllPasswords, setRevealAllPasswords] = useState<boolean>(true);
+  const [newAdminUsername, setNewAdminUsername] = useState<string>("");
+  const [newAdminPassword, setNewAdminPassword] = useState<string>("");
+  const [newAdminRole, setNewAdminRole] = useState<string>("user");
+  const [createUserError, setCreateUserError] = useState<string>("");
+  const [createUserSuccess, setCreateUserSuccess] = useState<string>("");
+  const [copiedUser, setCopiedUser] = useState<string>("");
+
+  // Master Security PIN / Key State
+  const [adminKey, setAdminKey] = useState<string>("");
+  const [showPinAuthModal, setShowPinAuthModal] = useState<boolean>(false);
+  const [pinInput, setPinInput] = useState<string>("");
+  const [pinAuthError, setPinAuthError] = useState<string>("");
+  const [showChangePinModal, setShowChangePinModal] = useState<boolean>(false);
+  const [oldPinInput, setOldPinInput] = useState<string>("");
+  const [newPinInput, setNewPinInput] = useState<string>("");
+  const [changePinError, setChangePinError] = useState<string>("");
+  const [changePinSuccess, setChangePinSuccess] = useState<string>("");
+
+  const getActiveAdminKey = () => adminKey;
 
   const togglePasswordVisibility = (username: string) => {
     setShowPasswords(prev => ({
@@ -211,9 +233,132 @@ export default function App() {
   };
 
   const handleOpenAdminPanel = () => {
-    fetchUsers();
-    fetchSupabaseStatus();
-    setShowBottomAdminPanel(true);
+    const key = getActiveAdminKey();
+    if (key) {
+      fetchUsers(key);
+      fetchSupabaseStatus();
+      setShowBottomAdminPanel(true);
+      return;
+    }
+    setPinInput("");
+    setPinAuthError("");
+    setShowPinAuthModal(true);
+  };
+
+  const handleVerifyPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinAuthError("");
+    if (!pinInput.trim()) {
+      setPinAuthError("Please enter the Master Admin PIN.");
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/verify-pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: pinInput.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Incorrect Admin PIN. Access Denied.");
+      }
+      const verifiedKey = pinInput.trim();
+      setAdminKey(verifiedKey);
+      setShowPinAuthModal(false);
+      fetchUsers(verifiedKey);
+      fetchSupabaseStatus();
+      setShowBottomAdminPanel(true);
+    } catch (err: any) {
+      setPinAuthError(err.message || "Access Denied.");
+    }
+  };
+
+  const handleChangeAdminPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setChangePinError("");
+    setChangePinSuccess("");
+    if (!oldPinInput.trim() || !newPinInput.trim()) {
+      setChangePinError("Both current and new PIN are required.");
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/change-pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPin: oldPinInput.trim(), newPin: newPinInput.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to update PIN.");
+      }
+      setChangePinSuccess("Admin Master Security PIN updated successfully!");
+      setAdminKey(newPinInput.trim());
+      setOldPinInput("");
+      setNewPinInput("");
+    } catch (err: any) {
+      setChangePinError(err.message || "Failed to update PIN.");
+    }
+  };
+
+  const handleAdminCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCreateUserError("");
+    setCreateUserSuccess("");
+    if (!newAdminUsername.trim() || !newAdminPassword.trim()) {
+      setCreateUserError("Please enter username/email and password.");
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/users/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-key": getActiveAdminKey()
+        },
+        body: JSON.stringify({
+          username: newAdminUsername.trim(),
+          password: newAdminPassword.trim(),
+          role: newAdminRole,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to create user.");
+      }
+      setCreateUserSuccess(`Account '${newAdminUsername}' created!`);
+      setNewAdminUsername("");
+      setNewAdminPassword("");
+      fetchUsers();
+    } catch (err: any) {
+      setCreateUserError(err.message || "Failed to create user.");
+    }
+  };
+
+  const handleChangePassword = async (targetUsername: string) => {
+    const newPassword = prompt(`Enter new password for '${targetUsername}':`);
+    if (!newPassword || newPassword.trim() === "") return;
+    try {
+      const res = await fetch("/api/admin/users/password", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-key": getActiveAdminKey()
+        },
+        body: JSON.stringify({ username: targetUsername, newPassword: newPassword.trim() }),
+      });
+      if (res.ok) {
+        alert(`Password for '${targetUsername}' updated successfully!`);
+        fetchUsers();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const copyCredentials = (u: string, p: string) => {
+    navigator.clipboard.writeText(`Username: ${u}\nPassword: ${p}`);
+    setCopiedUser(u);
+    setTimeout(() => setCopiedUser(""), 2000);
   };
 
   const handleLogin = async (usernameInput: string, passwordInput: string) => {
@@ -260,13 +405,18 @@ export default function App() {
     setActiveTab("summary");
   };
 
-  const fetchUsers = async () => {
+  const fetchUsers = async (overrideKey?: string) => {
+    const key = overrideKey || getActiveAdminKey();
     try {
       setAdminLoading(true);
-      const response = await fetch("/api/admin/users");
+      const response = await fetch("/api/admin/users", {
+        headers: { "x-admin-key": key }
+      });
       const data = await response.json();
       if (response.ok) {
         setAllUsers(data.users || []);
+      } else {
+        setAllUsers([]);
       }
     } catch (err) {
       console.error("Error fetching users:", err);
@@ -297,7 +447,10 @@ export default function App() {
     try {
       const res = await fetch("/api/admin/users/role", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-key": getActiveAdminKey()
+        },
         body: JSON.stringify({ username: targetUsername, newRole }),
       });
       if (res.ok) {
@@ -313,7 +466,10 @@ export default function App() {
     try {
       const res = await fetch("/api/admin/users/delete", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-key": getActiveAdminKey()
+        },
         body: JSON.stringify({ username: targetUsername }),
       });
       if (res.ok) {
@@ -3028,22 +3184,89 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Search Bar */}
-                  <div className="relative">
-                    <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 opacity-60">
-                      <Search className="w-4 h-4" />
-                    </span>
-                    <input
-                      type="text"
-                      placeholder="Search accounts by username or email..."
-                      value={adminSearchQuery}
-                      onChange={(e) => setAdminSearchQuery(e.target.value)}
-                      className={`w-full py-2.5 pl-10 pr-4 rounded-xl text-xs font-medium border focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all ${
-                        darkMode 
-                          ? "bg-[#2D1B69]/75 border-white/10 text-white placeholder-indigo-300/40" 
-                          : "bg-white border-indigo-200 text-slate-800 placeholder-slate-400"
+                  {/* Create New User Form Card */}
+                  <div className={`p-5 rounded-2xl border ${
+                    darkMode ? "bg-white/5 border-white/10 text-white" : "bg-white border-indigo-100 text-slate-800 shadow-sm"
+                  }`}>
+                    <h4 className="font-extrabold text-xs uppercase tracking-wider text-indigo-400 mb-3 flex items-center gap-2">
+                      <UserPlus className="w-4 h-4" />
+                      Add New User Account & Credentials
+                    </h4>
+                    <form onSubmit={handleAdminCreateUser} className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                      <input
+                        type="text"
+                        placeholder="Username / Email"
+                        value={newAdminUsername}
+                        onChange={(e) => setNewAdminUsername(e.target.value)}
+                        className={`py-2 px-3 rounded-xl text-xs font-medium border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                          darkMode ? "bg-white/5 border-white/10 text-white placeholder-slate-400" : "bg-slate-50 border-slate-200 text-slate-800"
+                        }`}
+                      />
+                      <input
+                        type="text"
+                        placeholder="Password"
+                        value={newAdminPassword}
+                        onChange={(e) => setNewAdminPassword(e.target.value)}
+                        className={`py-2 px-3 rounded-xl text-xs font-mono font-medium border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                          darkMode ? "bg-white/5 border-white/10 text-white placeholder-slate-400" : "bg-slate-50 border-slate-200 text-slate-800"
+                        }`}
+                      />
+                      <select
+                        value={newAdminRole}
+                        onChange={(e) => setNewAdminRole(e.target.value)}
+                        className={`py-2 px-3 rounded-xl text-xs font-bold border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                          darkMode ? "bg-slate-900 border-white/10 text-white" : "bg-slate-50 border-slate-200 text-slate-800"
+                        }`}
+                      >
+                        <option value="user">User Role</option>
+                        <option value="admin">Admin Role</option>
+                      </select>
+                      <button
+                        type="submit"
+                        className="py-2 px-4 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition-all shadow-md active:scale-95 cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        <UserPlus className="w-4 h-4" />
+                        <span>Create Account</span>
+                      </button>
+                    </form>
+                    {createUserError && (
+                      <p className="text-xs text-red-400 mt-2 font-semibold">{createUserError}</p>
+                    )}
+                    {createUserSuccess && (
+                      <p className="text-xs text-emerald-400 mt-2 font-semibold">{createUserSuccess}</p>
+                    )}
+                  </div>
+
+                  {/* Search Bar & Global Password Toggle */}
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                    <div className="relative flex-1">
+                      <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 opacity-60">
+                        <Search className="w-4 h-4" />
+                      </span>
+                      <input
+                        type="text"
+                        placeholder="Search accounts by username or email..."
+                        value={adminSearchQuery}
+                        onChange={(e) => setAdminSearchQuery(e.target.value)}
+                        className={`w-full py-2.5 pl-10 pr-4 rounded-xl text-xs font-medium border focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all ${
+                          darkMode 
+                            ? "bg-[#2D1B69]/75 border-white/10 text-white placeholder-indigo-300/40" 
+                            : "bg-white border-indigo-200 text-slate-800 placeholder-slate-400"
+                        }`}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setRevealAllPasswords(!revealAllPasswords)}
+                      className={`py-2.5 px-4 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-2 ${
+                        revealAllPasswords
+                          ? "bg-amber-500/20 border-amber-500/30 text-amber-300"
+                          : "bg-white/5 border-white/10 text-slate-300 hover:text-white"
                       }`}
-                    />
+                    >
+                      {revealAllPasswords ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      <span>{revealAllPasswords ? "Mask Passwords" : "Show All Passwords"}</span>
+                    </button>
                   </div>
 
                   {/* Users Table */}
@@ -3088,13 +3311,13 @@ export default function App() {
                                 </td>
                                 <td className="p-3.5 font-mono text-emerald-400 font-semibold">
                                   <div className="flex items-center gap-2">
-                                    <span>{showPasswords[userObj.username] ? (userObj.password || "••••••••") : "••••••••"}</span>
+                                    <span>{(revealAllPasswords || showPasswords[userObj.username]) ? (userObj.password || "••••••••") : "••••••••"}</span>
                                     <button
                                       onClick={() => togglePasswordVisibility(userObj.username)}
                                       className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
                                       title={showPasswords[userObj.username] ? "Hide Password" : "Reveal Password"}
                                     >
-                                      {showPasswords[userObj.username] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                      {(revealAllPasswords || showPasswords[userObj.username]) ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                                     </button>
                                   </div>
                                 </td>
@@ -3113,18 +3336,34 @@ export default function App() {
                                 <td className="p-3.5 opacity-60 text-[11px]">
                                   {userObj.createdAt ? new Date(userObj.createdAt).toLocaleString() : "N/A"}
                                 </td>
-                                <td className="p-3.5 text-right space-x-2">
+                                <td className="p-3.5 text-right space-x-1.5">
+                                  <button
+                                    onClick={() => copyCredentials(userObj.username, userObj.password || "")}
+                                    className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 hover:bg-white/20 text-indigo-200 border border-white/10 transition-all cursor-pointer inline-flex items-center gap-1"
+                                    title="Copy Username & Password"
+                                  >
+                                    {copiedUser === userObj.username ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                                    <span>{copiedUser === userObj.username ? "Copied" : "Copy"}</span>
+                                  </button>
+                                  <button
+                                    onClick={() => handleChangePassword(userObj.username)}
+                                    className="px-2 py-1 rounded-lg text-[10px] font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition-all cursor-pointer inline-flex items-center gap-1"
+                                    title="Edit User Password"
+                                  >
+                                    <Key className="w-3 h-3" />
+                                    <span>Pass</span>
+                                  </button>
                                   <button
                                     onClick={() => handleUpdateRole(userObj.username, userObj.role)}
-                                    className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 transition-all cursor-pointer"
+                                    className="px-2 py-1 rounded-lg text-[10px] font-bold bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 transition-all cursor-pointer"
                                     title="Toggle Admin / User Role"
                                   >
-                                    Set as {userObj.role === "admin" ? "User" : "Admin"}
+                                    {userObj.role === "admin" ? "Demote" : "Make Admin"}
                                   </button>
                                   {userObj.username !== user?.username && (
                                     <button
                                       onClick={() => handleDeleteUser(userObj.username)}
-                                      className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 transition-all cursor-pointer"
+                                      className="px-2 py-1 rounded-lg text-[10px] font-bold bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 transition-all cursor-pointer"
                                       title="Remove User Account"
                                     >
                                       Remove
@@ -3203,7 +3442,21 @@ export default function App() {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={fetchUsers}
+                  onClick={() => {
+                    setOldPinInput("");
+                    setNewPinInput("");
+                    setChangePinError("");
+                    setChangePinSuccess("");
+                    setShowChangePinModal(true);
+                  }}
+                  className="px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition-all cursor-pointer flex items-center gap-1.5"
+                  title="Change Master Admin PIN"
+                >
+                  <Key className="w-3.5 h-3.5" />
+                  <span>Change PIN</span>
+                </button>
+                <button
+                  onClick={() => fetchUsers()}
                   disabled={adminLoading}
                   className="px-3 py-1.5 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/20 text-white border border-white/20 transition-all cursor-pointer flex items-center gap-1.5"
                 >
@@ -3211,11 +3464,15 @@ export default function App() {
                   <span>Refresh</span>
                 </button>
                 <button
-                  onClick={() => setShowBottomAdminPanel(false)}
-                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white transition-all cursor-pointer"
-                  title="Close Admin Panel"
+                  onClick={() => {
+                    setAdminKey("");
+                    setShowBottomAdminPanel(false);
+                  }}
+                  className="px-3 py-1.5 rounded-xl text-xs font-bold bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 transition-all cursor-pointer flex items-center gap-1.5"
+                  title="Lock and exit admin panel"
                 >
-                  ✕
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Lock & Exit</span>
                 </button>
               </div>
             </div>
@@ -3241,18 +3498,77 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Search Bar */}
-              <div className="relative">
-                <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 opacity-60">
-                  <Search className="w-4 h-4" />
-                </span>
-                <input
-                  type="text"
-                  placeholder="Filter users by email or username..."
-                  value={adminSearchQuery}
-                  onChange={(e) => setAdminSearchQuery(e.target.value)}
-                  className="w-full py-2.5 pl-10 pr-4 rounded-xl text-xs font-medium bg-white/5 border border-white/10 text-white placeholder-indigo-300/40 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-                />
+              {/* Create New User Form Card */}
+              <div className="p-4 rounded-2xl border border-white/10 bg-white/5 text-white">
+                <h4 className="font-extrabold text-xs uppercase tracking-wider text-indigo-400 mb-2 flex items-center gap-2">
+                  <UserPlus className="w-4 h-4" />
+                  Add New User Account & Credentials
+                </h4>
+                <form onSubmit={handleAdminCreateUser} className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                  <input
+                    type="text"
+                    placeholder="Username / Email"
+                    value={newAdminUsername}
+                    onChange={(e) => setNewAdminUsername(e.target.value)}
+                    className="py-2 px-3 rounded-xl text-xs font-medium bg-white/10 border border-white/10 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Password"
+                    value={newAdminPassword}
+                    onChange={(e) => setNewAdminPassword(e.target.value)}
+                    className="py-2 px-3 rounded-xl text-xs font-mono font-medium bg-white/10 border border-white/10 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <select
+                    value={newAdminRole}
+                    onChange={(e) => setNewAdminRole(e.target.value)}
+                    className="py-2 px-3 rounded-xl text-xs font-bold bg-slate-900 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="user">User Role</option>
+                    <option value="admin">Admin Role</option>
+                  </select>
+                  <button
+                    type="submit"
+                    className="py-2 px-4 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition-all shadow-md active:scale-95 cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>Create Account</span>
+                  </button>
+                </form>
+                {createUserError && (
+                  <p className="text-xs text-red-400 mt-2 font-semibold">{createUserError}</p>
+                )}
+                {createUserSuccess && (
+                  <p className="text-xs text-emerald-400 mt-2 font-semibold">{createUserSuccess}</p>
+                )}
+              </div>
+
+              {/* Search Bar & Password Toggle */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="relative flex-1">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 opacity-60">
+                    <Search className="w-4 h-4" />
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="Filter users by email or username..."
+                    value={adminSearchQuery}
+                    onChange={(e) => setAdminSearchQuery(e.target.value)}
+                    className="w-full py-2.5 pl-10 pr-4 rounded-xl text-xs font-medium bg-white/5 border border-white/10 text-white placeholder-indigo-300/40 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRevealAllPasswords(!revealAllPasswords)}
+                  className={`py-2.5 px-3.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-2 ${
+                    revealAllPasswords
+                      ? "bg-amber-500/20 border-amber-500/30 text-amber-300"
+                      : "bg-white/10 border-white/10 text-slate-300 hover:text-white"
+                  }`}
+                >
+                  {revealAllPasswords ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  <span>{revealAllPasswords ? "Mask Passwords" : "Show Passwords"}</span>
+                </button>
               </div>
 
               {/* Users & Credentials Table */}
@@ -3263,7 +3579,7 @@ export default function App() {
                 </div>
               ) : allUsers.length === 0 ? (
                 <div className="py-12 text-center text-slate-400 text-xs">
-                  No registered users found.
+                  No registered users found. Use the form above to add an account!
                 </div>
               ) : (
                 <div className="overflow-x-auto rounded-2xl border border-white/10 bg-white/5">
@@ -3293,13 +3609,13 @@ export default function App() {
                             </td>
                             <td className="p-3 font-mono text-emerald-400 font-semibold">
                               <div className="flex items-center gap-2">
-                                <span>{showPasswords[userObj.username] ? (userObj.password || "••••••••") : "••••••••"}</span>
+                                <span>{(revealAllPasswords || showPasswords[userObj.username]) ? (userObj.password || "••••••••") : "••••••••"}</span>
                                 <button
                                   onClick={() => togglePasswordVisibility(userObj.username)}
                                   className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
                                   title={showPasswords[userObj.username] ? "Hide Password" : "Reveal Password"}
                                 >
-                                  {showPasswords[userObj.username] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                  {(revealAllPasswords || showPasswords[userObj.username]) ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                                 </button>
                               </div>
                             </td>
@@ -3316,6 +3632,22 @@ export default function App() {
                               {userObj.lastLogin ? new Date(userObj.lastLogin).toLocaleString() : "Active Now"}
                             </td>
                             <td className="p-3 text-right space-x-1.5">
+                              <button
+                                onClick={() => copyCredentials(userObj.username, userObj.password || "")}
+                                className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 hover:bg-white/20 text-indigo-200 border border-white/10 transition-all cursor-pointer inline-flex items-center gap-1"
+                                title="Copy Username & Password"
+                              >
+                                {copiedUser === userObj.username ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                                <span>{copiedUser === userObj.username ? "Copied" : "Copy"}</span>
+                              </button>
+                              <button
+                                onClick={() => handleChangePassword(userObj.username)}
+                                className="px-2 py-1 rounded-lg text-[10px] font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition-all cursor-pointer inline-flex items-center gap-1"
+                                title="Edit Password"
+                              >
+                                <Key className="w-3 h-3" />
+                                <span>Pass</span>
+                              </button>
                               <button
                                 onClick={() => handleUpdateRole(userObj.username, userObj.role)}
                                 className="px-2 py-1 rounded-lg text-[10px] font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-500/30 transition-all cursor-pointer"
@@ -3353,6 +3685,156 @@ export default function App() {
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Master Admin PIN Verification Modal */}
+      {showPinAuthModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md animate-fade-in">
+          <div className="relative w-full max-w-md p-6 sm:p-8 rounded-3xl border border-indigo-500/30 text-white bg-gradient-to-b from-[#1c124e] via-[#0b062b] to-[#04020e] shadow-[0_0_80px_rgba(99,102,241,0.4)] animate-scale-up">
+            
+            <div className="flex items-center gap-3 mb-6">
+              <div className="p-3 bg-indigo-500/20 rounded-2xl text-indigo-400 border border-indigo-500/30">
+                <Lock className="w-6 h-6 text-indigo-300" />
+              </div>
+              <div>
+                <h3 className="font-display font-extrabold text-xl text-white">
+                  Admin Security Lock
+                </h3>
+                <p className="text-xs text-indigo-200 mt-0.5">
+                  Enter Master Admin PIN to unlock panel
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleVerifyPin} className="space-y-4">
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-indigo-300 uppercase tracking-wider">
+                    Master Security Key
+                  </label>
+                  <span className="text-[10px] text-indigo-300/70 font-mono">
+                    Default key: admin123
+                  </span>
+                </div>
+                <div className="relative">
+                  <input
+                    type="password"
+                    placeholder="Enter Master Key (e.g. admin123)..."
+                    value={pinInput}
+                    onChange={(e) => setPinInput(e.target.value)}
+                    autoFocus
+                    className="w-full py-3 px-4 rounded-xl text-sm font-mono bg-white/10 border border-white/20 text-white placeholder-indigo-300/40 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setPinInput("admin123")}
+                    className="absolute right-3 top-2.5 px-2 py-1 rounded text-[10px] font-bold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-500/30 transition-all cursor-pointer"
+                    title="Fill default key"
+                  >
+                    Use Default
+                  </button>
+                </div>
+              </div>
+
+              {pinAuthError && (
+                <div className="p-3 rounded-xl bg-red-500/20 border border-red-500/30 text-red-300 text-xs font-bold flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 shrink-0" />
+                  <span>{pinAuthError}</span>
+                </div>
+              )}
+
+              <div className="pt-2 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowPinAuthModal(false)}
+                  className="px-4 py-2.5 rounded-xl font-bold text-xs bg-white/10 hover:bg-white/20 text-slate-300 transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-xl font-bold text-xs bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg transition-all active:scale-95 cursor-pointer flex items-center gap-2"
+                >
+                  <Lock className="w-4 h-4" />
+                  <span>Unlock Admin Panel</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Change Master Admin PIN Modal */}
+      {showChangePinModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md animate-fade-in">
+          <div className="relative w-full max-w-md p-6 sm:p-8 rounded-3xl border border-amber-500/30 text-white bg-gradient-to-b from-[#1c124e] via-[#0b062b] to-[#04020e] shadow-[0_0_80px_rgba(245,158,11,0.3)] animate-scale-up">
+            
+            <div className="flex items-center gap-3 mb-6">
+              <div className="p-3 bg-amber-500/20 rounded-2xl text-amber-400 border border-amber-500/30">
+                <Key className="w-6 h-6 text-amber-300" />
+              </div>
+              <div>
+                <h3 className="font-display font-extrabold text-xl text-white">
+                  Change Master Admin PIN
+                </h3>
+                <p className="text-xs text-amber-200/80 mt-0.5">
+                  Update your Master Admin Security PIN
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleChangeAdminPin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-amber-300 mb-1">
+                  Current Admin PIN
+                </label>
+                <input
+                  type="password"
+                  placeholder="Enter current PIN..."
+                  value={oldPinInput}
+                  onChange={(e) => setOldPinInput(e.target.value)}
+                  className="w-full py-2.5 px-3.5 rounded-xl text-xs font-mono bg-white/10 border border-white/20 text-white placeholder-amber-200/30 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-amber-300 mb-1">
+                  New Admin PIN
+                </label>
+                <input
+                  type="password"
+                  placeholder="Enter new PIN (min 4 characters)..."
+                  value={newPinInput}
+                  onChange={(e) => setNewPinInput(e.target.value)}
+                  className="w-full py-2.5 px-3.5 rounded-xl text-xs font-mono bg-white/10 border border-white/20 text-white placeholder-amber-200/30 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              {changePinError && (
+                <p className="text-xs text-red-400 font-semibold">{changePinError}</p>
+              )}
+              {changePinSuccess && (
+                <p className="text-xs text-emerald-400 font-semibold">{changePinSuccess}</p>
+              )}
+
+              <div className="pt-2 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowChangePinModal(false)}
+                  className="px-4 py-2 rounded-xl font-bold text-xs bg-white/10 hover:bg-white/20 text-slate-300 transition-all cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-xl font-bold text-xs bg-amber-600 hover:bg-amber-500 text-white transition-all shadow-md cursor-pointer"
+                >
+                  Save New PIN
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
