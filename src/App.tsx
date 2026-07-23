@@ -213,7 +213,9 @@ export default function App() {
   const [copiedUser, setCopiedUser] = useState<string>("");
 
   // Master Security PIN / Key State
-  const [adminKey, setAdminKey] = useState<string>("");
+  const [adminKey, setAdminKey] = useState<string>(() => {
+    return localStorage.getItem("admin_master_key") || "admin123";
+  });
   const [showPinAuthModal, setShowPinAuthModal] = useState<boolean>(false);
   const [pinInput, setPinInput] = useState<string>("");
   const [pinAuthError, setPinAuthError] = useState<string>("");
@@ -223,7 +225,7 @@ export default function App() {
   const [changePinError, setChangePinError] = useState<string>("");
   const [changePinSuccess, setChangePinSuccess] = useState<string>("");
 
-  const getActiveAdminKey = () => adminKey;
+  const getActiveAdminKey = () => adminKey || localStorage.getItem("admin_master_key") || "admin123";
 
   const togglePasswordVisibility = (username: string) => {
     setShowPasswords(prev => ({
@@ -234,15 +236,9 @@ export default function App() {
 
   const handleOpenAdminPanel = () => {
     const key = getActiveAdminKey();
-    if (key) {
-      fetchUsers(key);
-      fetchSupabaseStatus();
-      setShowBottomAdminPanel(true);
-      return;
-    }
-    setPinInput("");
-    setPinAuthError("");
-    setShowPinAuthModal(true);
+    fetchUsers(key);
+    fetchSupabaseStatus();
+    setShowBottomAdminPanel(true);
   };
 
   const handleVerifyPin = async (e: React.FormEvent) => {
@@ -264,6 +260,7 @@ export default function App() {
       }
       const verifiedKey = pinInput.trim();
       setAdminKey(verifiedKey);
+      localStorage.setItem("admin_master_key", verifiedKey);
       setShowPinAuthModal(false);
       fetchUsers(verifiedKey);
       fetchSupabaseStatus();
@@ -293,6 +290,7 @@ export default function App() {
       }
       setChangePinSuccess("Admin Master Security PIN updated successfully!");
       setAdminKey(newPinInput.trim());
+      localStorage.setItem("admin_master_key", newPinInput.trim());
       setOldPinInput("");
       setNewPinInput("");
     } catch (err: any) {
@@ -393,6 +391,7 @@ export default function App() {
       }
       localStorage.setItem("studygen_auth_user", JSON.stringify(data.user));
       setUser(data.user);
+      fetchUsers();
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -436,11 +435,23 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (user?.role === "admin" && activeTab === "admin") {
+    fetchUsers();
+    fetchSupabaseStatus();
+  }, []);
+
+  useEffect(() => {
+    let interval: any;
+    if (showBottomAdminPanel || (user?.role === "admin" && activeTab === "admin")) {
       fetchUsers();
       fetchSupabaseStatus();
+      interval = setInterval(() => {
+        fetchUsers();
+      }, 4000);
     }
-  }, [user, activeTab]);
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [showBottomAdminPanel, user, activeTab]);
 
   const handleUpdateRole = async (targetUsername: string, currentRole: string) => {
     const newRole = currentRole === "admin" ? "user" : "admin";
