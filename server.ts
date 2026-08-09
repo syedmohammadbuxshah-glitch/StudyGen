@@ -740,6 +740,7 @@ function setupLiveVoiceSession(server: any) {
 
   wss.on("connection", (ws) => {
     console.log("Client connected to real-time voice session");
+    let sessionPromise: Promise<any> | null = null;
     let session: any = null;
 
     ws.on("message", async (messageBuffer) => {
@@ -751,16 +752,18 @@ function setupLiveVoiceSession(server: any) {
           console.log("Setting up Gemini Live session with context length:", contextText.length);
 
           if (!process.env.GEMINI_API_KEY) {
-            throw new Error("No Gemini API key configured on server. Please set GEMINI_API_KEY.");
+            throw new Error("No Gemini API key configured on server. Please set GEMINI_API_KEY in secrets.");
           }
 
-          session = await ai.live.connect({
+          sessionPromise = ai.live.connect({
             model: "gemini-3.1-flash-live-preview",
             config: {
               responseModalities: ["AUDIO"] as any,
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }, // Aoede, Puck, Charon, Kore, Fenrir, Zephyr
               },
+              outputAudioTranscription: {},
+              inputAudioTranscription: {},
               systemInstruction: `You are StudyGen's Real-time Live Voice Agent.
 The student is speaking to you. Be an enthusiastic, supportive, and brilliant academic AI tutor.
 Keep responses short, usually 1-3 sentences. Do not use complex markdown formatting, bullet points, or list structures. Just speak naturally and direct, like you're in a phone call.
@@ -771,44 +774,78 @@ ${contextText || "No notes uploaded yet."}`,
             },
             callbacks: {
               onmessage: (message: any) => {
-                const audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-                if (audio) {
-                  ws.send(JSON.stringify({ type: "audio", audio }));
+                const parts = message.serverContent?.modelTurn?.parts || [];
+                for (const part of parts) {
+                  if (part.inlineData?.data) {
+                    if (ws.readyState === 1) ws.send(JSON.stringify({ type: "audio", audio: part.inlineData.data }));
+                  }
+                  if (part.text) {
+                    if (ws.readyState === 1) ws.send(JSON.stringify({ type: "text", text: part.text }));
+                  }
+                }
+                if (message.serverContent?.outputAudioTranscription?.text) {
+                  if (ws.readyState === 1) ws.send(JSON.stringify({ type: "text", text: message.serverContent.outputAudioTranscription.text }));
+                }
+                if (message.serverContent?.inputAudioTranscription?.text) {
+                  if (ws.readyState === 1) ws.send(JSON.stringify({ type: "userText", text: message.serverContent.inputAudioTranscription.text }));
+                }
+                if (message.serverContent?.turnComplete) {
+                  if (ws.readyState === 1) ws.send(JSON.stringify({ type: "turnComplete" }));
                 }
                 if (message.serverContent?.interrupted) {
-                  ws.send(JSON.stringify({ type: "interrupted" }));
+                  if (ws.readyState === 1) ws.send(JSON.stringify({ type: "interrupted" }));
                 }
               },
               onclose: () => {
                 console.log("Gemini Live session closed");
-                ws.send(JSON.stringify({ type: "closed" }));
+                if (ws.readyState === 1) ws.send(JSON.stringify({ type: "closed" }));
               },
               onerror: (err: any) => {
                 console.error("Gemini Live session error:", err);
-                ws.send(JSON.stringify({ type: "error", error: err.message || "Session error" }));
+                if (ws.readyState === 1) ws.send(JSON.stringify({ type: "error", error: err.message || "Session error" }));
               }
             },
           });
 
-          ws.send(JSON.stringify({ type: "ready" }));
+          session = await sessionPromise;
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: "ready" }));
 
         } else if (data.type === "audio") {
-          if (session) {
-            session.sendRealtimeInput({
-              audio: { data: data.audio, mimeType: "audio/pcm;rate=16000" },
-            });
+          if (sessionPromise) {
+            const activeSession = await sessionPromise;
+            if (activeSession) {
+              activeSession.sendRealtimeInput({
+                audio: { data: data.audio, mimeType: "audio/pcm;rate=16000" },
+              });
+            }
+          }
+        } else if (data.type === "text") {
+          if (sessionPromise) {
+            const activeSession = await sessionPromise;
+            if (activeSession) {
+              activeSession.sendRealtimeInput({
+                text: data.text
+              });
+            }
           }
         }
       } catch (err: any) {
         console.error("WebSocket message handling error:", err);
-        ws.send(JSON.stringify({ type: "error", error: err.message || "Invalid message format" }));
+        if (ws.readyState === 1) ws.send(JSON.stringify({ type: "error", error: err.message || "Invalid message format" }));
       }
     });
 
     ws.on("close", () => {
       console.log("Client disconnected from voice session");
       if (session) {
-        session.close();
+        try { session.close(); } catch (e) {}
+      }
+    });
+
+    ws.on("error", (err) => {
+      console.error("WebSocket client error:", err);
+      if (session) {
+        try { session.close(); } catch (e) {}
       }
     });
   });

@@ -766,6 +766,17 @@ export default function App() {
   // Handle active Voice Agent responses
   const handleVoiceAgentQuery = async (queryText: string, context?: string) => {
     const textToUse = context !== undefined ? context : notesText;
+
+    if (useRealtimeLive && liveWsRef.current && liveWsRef.current.readyState === WebSocket.OPEN) {
+      setVoiceTranscript(`You: "${queryText}"`);
+      setVoiceAgentState("speaking");
+      liveWsRef.current.send(JSON.stringify({
+        type: "text",
+        text: queryText
+      }));
+      return;
+    }
+
     try {
       setVoiceAgentState("speaking");
       setVoiceTranscript("StudyGen is thinking... 🧠");
@@ -841,8 +852,21 @@ export default function App() {
     return buffer;
   };
 
-  const pcmToBase64 = (float32Array: Float32Array): string => {
-    const buffer = floatTo16BitPCM(float32Array);
+  const resampleTo16k = (inputData: Float32Array, inputSampleRate: number): Float32Array => {
+    if (inputSampleRate === 16000) return inputData;
+    const ratio = inputSampleRate / 16000;
+    const newLength = Math.round(inputData.length / ratio);
+    const result = new Float32Array(newLength);
+    for (let i = 0; i < newLength; i++) {
+      const originIndex = Math.round(i * ratio);
+      result[i] = inputData[originIndex] || 0;
+    }
+    return result;
+  };
+
+  const pcmToBase64 = (float32Array: Float32Array, sampleRate: number = 16000): string => {
+    const resampled = resampleTo16k(float32Array, sampleRate);
+    const buffer = floatTo16BitPCM(resampled);
     const bytes = new Uint8Array(buffer);
     let binary = "";
     for (let i = 0; i < bytes.length; i++) {
@@ -877,8 +901,16 @@ export default function App() {
           await startMicRecording(ws);
         } else if (msg.type === "audio") {
           setVoiceAgentState("speaking");
-          setVoiceTranscript("Gemini Live is speaking... 🔊");
           playAudioChunk(msg.audio);
+        } else if (msg.type === "text") {
+          setVoiceTranscript(`StudyGen: "${msg.text}"`);
+        } else if (msg.type === "userText") {
+          setVoiceTranscript(`You: "${msg.text}"`);
+        } else if (msg.type === "turnComplete") {
+          if (activeSourcesRef.current.length === 0) {
+            setVoiceAgentState("listening");
+            setVoiceTranscript("Listening... Ask me anything! 🎙️");
+          }
         } else if (msg.type === "interrupted") {
           console.log("Speech interrupted by student!");
           stopActivePlayback();
@@ -886,10 +918,7 @@ export default function App() {
           setVoiceTranscript("Listening... 🎙️");
         } else if (msg.type === "error") {
           console.error("Gemini Live session error:", msg.error);
-          setVoiceTranscript(`Live API error: ${msg.error}. Falling back to standard voice mode.`);
-          cleanupLiveVoiceSession();
-          setUseRealtimeLive(false);
-          toggleStandardVoiceAgent(true);
+          setVoiceTranscript(`Live session info: ${msg.error}`);
         } else if (msg.type === "closed") {
           console.log("Gemini Live session closed by server");
           cleanupLiveVoiceSession();
@@ -919,7 +948,7 @@ export default function App() {
 
   const startMicRecording = async (ws: WebSocket) => {
     try {
-      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       inputAudioCtxRef.current = inputCtx;
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -929,13 +958,17 @@ export default function App() {
       const processor = inputCtx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
+      // Silent gain node to avoid feeding microphone audio back into speakers
+      const gain = inputCtx.createGain();
+      gain.gain.value = 0;
+
       source.connect(processor);
-      processor.connect(inputCtx.destination);
+      processor.connect(gain);
+      gain.connect(inputCtx.destination);
 
       processor.onaudioprocess = (e) => {
         if (ws.readyState === WebSocket.OPEN) {
           const inputData = e.inputBuffer.getChannelData(0);
-          // Quick threshold check to avoid sending absolute silence
           let hasSignal = false;
           for (let i = 0; i < inputData.length; i++) {
             if (Math.abs(inputData[i]) > 0.005) {
@@ -944,7 +977,7 @@ export default function App() {
             }
           }
           if (hasSignal) {
-            const base64 = pcmToBase64(inputData);
+            const base64 = pcmToBase64(inputData, inputCtx.sampleRate);
             ws.send(JSON.stringify({ type: "audio", audio: base64 }));
           }
         }
