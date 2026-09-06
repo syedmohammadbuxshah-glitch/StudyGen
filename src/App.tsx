@@ -790,8 +790,9 @@ export default function App() {
         })
       });
 
-      if (!response.ok) throw new Error("Voice tutor server error");
+      if (!response.ok) throw new Error(await getApiError(response, "Voice tutor server error."));
       const data = await response.json();
+      if (!data.responseText?.trim()) throw new Error("Gemini returned an empty voice response.");
       
       setVoiceTranscript(`StudyGen: "${data.responseText}"`);
       addXp(10);
@@ -953,8 +954,11 @@ export default function App() {
     try {
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       inputAudioCtxRef.current = inputCtx;
+      await inputCtx.resume();
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
       mediaStreamRef.current = stream;
 
       const source = inputCtx.createMediaStreamSource(stream);
@@ -997,6 +1001,11 @@ export default function App() {
         outputAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       }
       const audioCtx = outputAudioCtxRef.current;
+      // Live responses arrive after the original button click. Explicitly resume
+      // so browsers that suspend Web Audio outside a gesture still play Gemini.
+      if (audioCtx.state === "suspended") {
+        void audioCtx.resume();
+      }
 
       const binary = atob(base64Audio);
       const len = binary.length;
@@ -1203,20 +1212,28 @@ export default function App() {
     setPastedText("");
     addXp(15);
     
-    // Automatically kickstart all AI study feature generations in parallel!
+    // Generate the study aids after the pasted notes are stored.
     triggerAutoGeneration(text);
   };
 
-  // Trigger Automatic AI Study Assistance Generation (Summary, Quizzes, Flashcards)
+  const getApiError = async (response: Response, fallback: string) => {
+    try {
+      const payload = await response.json();
+      return payload.error || payload.message || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  // Trigger automatic study assistance one request at a time. Sending three large
+  // prompts concurrently frequently exhausts Gemini's per-minute quota, leaving
+  // the summary and quiz blank even though either feature works independently.
   const triggerAutoGeneration = async (textToUse: string) => {
     if (!textToUse.trim()) return;
-    // Set active tab to summary and fire all endpoints in parallel for extreme speed!
     setActiveTab("summary");
-    await Promise.all([
-      handleSummarize(textToUse, true),
-      handleGenerateQuiz(textToUse, true),
-      handleGenerateFlashcards(textToUse, true)
-    ]);
+    await handleSummarize(textToUse, true);
+    await handleGenerateQuiz(textToUse, true);
+    await handleGenerateFlashcards(textToUse, true);
   };
 
   // Reset Notes Context
@@ -1242,14 +1259,15 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: textToUse })
       });
-      if (!response.ok) throw new Error("Failed to summarize");
+      if (!response.ok) throw new Error(await getApiError(response, "Failed to generate a summary."));
       const data = await response.json();
+      if (!data.summary?.trim()) throw new Error("Gemini returned an empty summary. Please try again.");
       setSummary(data.summary);
       addXp(40);
       setActiveTab("summary");
     } catch (err: any) {
       console.error("Auto summarize failed:", err);
-      if (!isAuto) alert("Error: " + err.message);
+      if (!isAuto) alert("Summary could not be generated: " + err.message);
     } finally {
       setSummarizeLoading(false);
     }
@@ -1301,7 +1319,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: textToUse, numQuestions: 5 })
       });
-      if (!response.ok) throw new Error("Failed to generate quiz");
+      if (!response.ok) throw new Error(await getApiError(response, "Failed to generate quiz."));
       const data = await response.json();
       
       if (data.questions && data.questions.length > 0) {

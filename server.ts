@@ -24,6 +24,8 @@ function getSupabaseServerClient() {
 const app = express();
 const PORT = 3000;
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
+// Keep this configurable: Live model availability is enabled per Gemini project and
+// preview model names change more frequently than the text-generation models.
 const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || "gemini-2.5-flash-native-audio-preview-09-2025";
 
 // Enable JSON body parsing with an increased limit to handle large uploaded text/notes and base64 images
@@ -374,7 +376,10 @@ if (!apiKey) {
 }
 
 const ai = new GoogleGenAI({
-  apiKey: apiKey || "",
+  // The SDK rejects an empty key during construction. Requests are still blocked
+  // by ensureGeminiConfigured, but this placeholder lets the app start and show
+  // the actionable configuration error instead of crashing on boot.
+  apiKey: apiKey || "missing-api-key",
   httpOptions: {
     headers: {
       "User-Agent": "aistudio-build",
@@ -386,6 +391,12 @@ function ensureGeminiConfigured(res: express.Response): boolean {
   if (apiKey) return true;
   res.status(503).json({ error: "Gemini is not configured. Add GEMINI_API_KEY to the server environment and restart the app." });
   return false;
+}
+
+function geminiErrorMessage(error: any, fallback: string): string {
+  const message = error?.message || fallback;
+  // Do not leak credentials or the full upstream request in a browser response.
+  return String(message).replace(/AIza[\w-]+/g, "[redacted API key]");
 }
 
 // Bulletproof JSON cleaning and parsing helper
@@ -434,10 +445,11 @@ Notes content:
 ${text.slice(0, 80000)}`, // Limit length to avoid overwhelming prompt size
     });
 
+    if (!response.text?.trim()) throw new Error("Gemini returned an empty summary. Please try again.");
     res.json({ summary: response.text });
   } catch (error: any) {
     console.error("Error summarizing content:", error);
-    res.status(500).json({ error: error.message || "Failed to generate study summary." });
+    res.status(500).json({ error: geminiErrorMessage(error, "Failed to generate study summary.") });
   }
 });
 
@@ -522,10 +534,13 @@ ${contextNotes}`,
     });
 
     const quizData = cleanAndParseJSON(response.text || "{}");
+    if (!Array.isArray(quizData.questions) || quizData.questions.length === 0) {
+      throw new Error("Gemini returned no quiz questions. Please try again.");
+    }
     res.json(quizData);
   } catch (error: any) {
     console.error("Error generating quiz:", error);
-    res.status(500).json({ error: error.message || "Failed to generate quiz." });
+    res.status(500).json({ error: geminiErrorMessage(error, "Failed to generate quiz.") });
   }
 });
 
@@ -779,7 +794,7 @@ function setupLiveVoiceSession(server: any) {
           const { contextText = "" } = data;
           console.log("Setting up Gemini Live session with context length:", contextText.length);
 
-          if (!process.env.GEMINI_API_KEY) {
+          if (!apiKey) {
             throw new Error("No Gemini API key configured on server. Please set GEMINI_API_KEY in secrets.");
           }
 
@@ -851,8 +866,11 @@ ${contextText || "No notes uploaded yet."}`,
           if (sessionPromise) {
             const activeSession = await sessionPromise;
             if (activeSession) {
-              activeSession.sendRealtimeInput({
-                text: data.text
+              // Text is a turn-based prompt. sendRealtimeInput is reserved for
+              // continuous audio/video and can silently discard text on Live API.
+              activeSession.sendClientContent({
+                turns: [{ role: "user", parts: [{ text: String(data.text).slice(0, 4000) }] }],
+                turnComplete: true,
               });
             }
           }
