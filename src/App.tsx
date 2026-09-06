@@ -353,8 +353,8 @@ export default function App() {
     }
   };
 
-  const copyCredentials = (u: string, p: string) => {
-    navigator.clipboard.writeText(`Username: ${u}\nPassword: ${p}`);
+  const copyCredentials = (u: string) => {
+    navigator.clipboard.writeText(`Username: ${u}`);
     setCopiedUser(u);
     setTimeout(() => setCopiedUser(""), 2000);
   };
@@ -918,7 +918,10 @@ export default function App() {
           setVoiceTranscript("Listening... 🎙️");
         } else if (msg.type === "error") {
           console.error("Gemini Live session error:", msg.error);
-          setVoiceTranscript(`Live session info: ${msg.error}`);
+          setVoiceTranscript("Gemini Live is unavailable. Switching to compatible voice mode. ✨");
+          cleanupLiveVoiceSession();
+          setUseRealtimeLive(false);
+          toggleStandardVoiceAgent(true);
         } else if (msg.type === "closed") {
           console.log("Gemini Live session closed by server");
           cleanupLiveVoiceSession();
@@ -3355,7 +3358,7 @@ export default function App() {
                                 </td>
                                 <td className="p-3.5 font-mono text-emerald-400 font-semibold">
                                   <div className="flex items-center gap-2">
-                                    <span>{(revealAllPasswords || showPasswords[userObj.username]) ? (userObj.password || "••••••••") : "••••••••"}</span>
+                                    <span>{userObj.passwordMasked || "••••••••"}</span>
                                     <button
                                       onClick={() => togglePasswordVisibility(userObj.username)}
                                       className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
@@ -3382,9 +3385,9 @@ export default function App() {
                                 </td>
                                 <td className="p-3.5 text-right space-x-1.5">
                                   <button
-                                    onClick={() => copyCredentials(userObj.username, userObj.password || "")}
+                                    onClick={() => copyCredentials(userObj.username)}
                                     className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 hover:bg-white/20 text-indigo-200 border border-white/10 transition-all cursor-pointer inline-flex items-center gap-1"
-                                    title="Copy Username & Password"
+                                    title="Copy Username"
                                   >
                                     {copiedUser === userObj.username ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                                     <span>{copiedUser === userObj.username ? "Copied" : "Copy"}</span>
@@ -3653,7 +3656,7 @@ export default function App() {
                             </td>
                             <td className="p-3 font-mono text-emerald-400 font-semibold">
                               <div className="flex items-center gap-2">
-                                <span>{(revealAllPasswords || showPasswords[userObj.username]) ? (userObj.password || "••••••••") : "••••••••"}</span>
+                            <span>{userObj.passwordMasked || "••••••••"}</span>
                                 <button
                                   onClick={() => togglePasswordVisibility(userObj.username)}
                                   className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
@@ -3677,9 +3680,9 @@ export default function App() {
                             </td>
                             <td className="p-3 text-right space-x-1.5">
                               <button
-                                onClick={() => copyCredentials(userObj.username, userObj.password || "")}
+                              onClick={() => copyCredentials(userObj.username)}
                                 className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/10 hover:bg-white/20 text-indigo-200 border border-white/10 transition-all cursor-pointer inline-flex items-center gap-1"
-                                title="Copy Username & Password"
+                              title="Copy Username"
                               >
                                 {copiedUser === userObj.username ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                                 <span>{copiedUser === userObj.username ? "Copied" : "Copy"}</span>

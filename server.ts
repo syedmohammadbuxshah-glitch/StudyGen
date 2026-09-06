@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import dotenv from "dotenv";
 import fs from "fs";
+import crypto from "crypto";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import { WebSocketServer } from "ws";
@@ -22,11 +23,31 @@ function getSupabaseServerClient() {
 
 const app = express();
 const PORT = 3000;
+const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
+const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || "gemini-2.5-flash-native-audio-preview-09-2025";
 
 // Enable JSON body parsing with an increased limit to handle large uploaded text/notes and base64 images
 app.use(express.json({ limit: "25mb" }));
 
 const USERS_FILE_PATH = path.join(process.cwd(), "users.json");
+
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `scrypt$${salt}$${hash}`;
+}
+
+function passwordMatches(password: string, storedPassword: string): boolean {
+  if (!storedPassword.startsWith("scrypt$")) {
+    // Support the original local demo accounts once, then upgrade them after login.
+    return password === storedPassword;
+  }
+
+  const [, salt, expectedHash] = storedPassword.split("$");
+  if (!salt || !expectedHash) return false;
+  const actualHash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return crypto.timingSafeEqual(Buffer.from(actualHash, "hex"), Buffer.from(expectedHash, "hex"));
+}
 
 function loadUsers() {
   try {
@@ -40,8 +61,8 @@ function loadUsers() {
   
   // Default user list with admin
   const defaultUsers = [
-    { username: "admin", password: "admin123", role: "admin", createdAt: new Date().toISOString() },
-    { username: "student", password: "password123", role: "user", createdAt: new Date().toISOString() }
+    { username: "admin", password: hashPassword("admin123"), role: "admin", createdAt: new Date().toISOString() },
+    { username: "student", password: hashPassword("password123"), role: "user", createdAt: new Date().toISOString() }
   ];
   try {
     fs.writeFileSync(USERS_FILE_PATH, JSON.stringify(defaultUsers, null, 2), "utf8");
@@ -65,6 +86,9 @@ app.post("/api/register", (req, res) => {
   if (!username || !password) {
     return res.status(400).json({ error: "Username or Email and password are required." });
   }
+  if (typeof username !== "string" || typeof password !== "string" || username.trim().length < 3 || password.length < 8) {
+    return res.status(400).json({ error: "Use a username with at least 3 characters and a password with at least 8 characters." });
+  }
 
   const users = loadUsers();
   const exists = users.find((u: any) => u.username.toLowerCase() === username.toLowerCase());
@@ -75,8 +99,8 @@ app.post("/api/register", (req, res) => {
   const now = new Date().toISOString();
   const newUser = {
     username: username.trim(),
-    password: password,
-    role: username.toLowerCase() === "admin" ? "admin" : "user",
+    password: hashPassword(password),
+    role: "user",
     createdAt: now,
     lastLogin: now,
     loginCount: 1
@@ -90,7 +114,7 @@ app.post("/api/register", (req, res) => {
 
 app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password) {
+  if (!username || !password || typeof username !== "string" || typeof password !== "string") {
     return res.status(400).json({ error: "Username or Email and password are required." });
   }
 
@@ -102,23 +126,14 @@ app.post("/api/login", (req, res) => {
 
   const now = new Date().toISOString();
 
-  if (!user) {
-    // Automatically record and create new user on login so credentials show in Admin Panel
-    user = {
-      username: trimmedUsername,
-      password: password,
-      role: trimmedUsername.toLowerCase().includes("admin") ? "admin" : "user",
-      createdAt: now,
-      lastLogin: now,
-      loginCount: 1
-    };
-    users.push(user);
-  } else {
-    // Update password to the logged in password and record activity
-    user.password = password;
-    user.lastLogin = now;
-    user.loginCount = (user.loginCount || 0) + 1;
+  if (!user || !passwordMatches(password, user.password)) {
+    return res.status(401).json({ error: "Incorrect username or password." });
   }
+
+  // Upgrade legacy local demo accounts to a password hash after their first valid login.
+  if (!user.password.startsWith("scrypt$")) user.password = hashPassword(password);
+  user.lastLogin = now;
+  user.loginCount = (user.loginCount || 0) + 1;
 
   saveUsers(users);
 
@@ -157,7 +172,7 @@ function verifyAdminAccess(req: express.Request): boolean {
   // Check if provided key matches any admin user's password or username
   const users = loadUsers();
   if (providedKey) {
-    const isAdminMatch = users.some((u: any) => u.role === "admin" && (u.password === providedKey || u.username === providedKey));
+    const isAdminMatch = users.some((u: any) => u.role === "admin" && (passwordMatches(providedKey, u.password) || u.username === providedKey));
     if (isAdminMatch) return true;
   }
 
@@ -205,7 +220,6 @@ app.get("/api/admin/users", (req, res) => {
   const users = loadUsers();
   const safeUsers = users.map((u: any) => ({
     username: u.username,
-    password: u.password,
     role: u.role || "user",
     createdAt: u.createdAt || new Date().toISOString(),
     lastLogin: u.lastLogin || u.createdAt || new Date().toISOString(),
@@ -283,7 +297,7 @@ app.post("/api/admin/users/create", (req, res) => {
   const now = new Date().toISOString();
   const newUser = {
     username: username.trim(),
-    password: password,
+    password: hashPassword(password),
     role: role || "user",
     createdAt: now,
     lastLogin: now,
@@ -312,7 +326,7 @@ app.post("/api/admin/users/password", (req, res) => {
     return res.status(404).json({ error: "User not found." });
   }
 
-  user.password = newPassword;
+  user.password = hashPassword(newPassword);
   saveUsers(users);
 
   res.json({ success: true, message: `Password updated for ${username}.` });
@@ -368,6 +382,12 @@ const ai = new GoogleGenAI({
   },
 });
 
+function ensureGeminiConfigured(res: express.Response): boolean {
+  if (apiKey) return true;
+  res.status(503).json({ error: "Gemini is not configured. Add GEMINI_API_KEY to the server environment and restart the app." });
+  return false;
+}
+
 // Bulletproof JSON cleaning and parsing helper
 function cleanAndParseJSON(text: string) {
   if (!text) return {};
@@ -395,13 +415,14 @@ function cleanAndParseJSON(text: string) {
 // 1. Summarizer Endpoint
 app.post("/api/summarize", async (req, res) => {
   try {
+    if (!ensureGeminiConfigured(res)) return;
     const { text } = req.body;
     if (!text || typeof text !== "string") {
       return res.status(400).json({ error: "No study notes content provided or invalid format." });
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: GEMINI_TEXT_MODEL,
       contents: `You are a master academic summarizer. Summarize the following lecture notes or textbook material. Create an elegant, easy-to-read summary with:
 1. A brief "High-Level Overview" summarizing the core concepts in a warm, welcoming tone.
 2. A "Key Takeaways" section (exactly 3-5 crucial points) formatted with ⭐ star bullet points.
@@ -423,6 +444,7 @@ ${text.slice(0, 80000)}`, // Limit length to avoid overwhelming prompt size
 // 2. Ask Questions Endpoint
 app.post("/api/ask-question", async (req, res) => {
   try {
+    if (!ensureGeminiConfigured(res)) return;
     const { text, question } = req.body;
     if (!question) {
       return res.status(400).json({ error: "Please enter a question to ask." });
@@ -430,7 +452,7 @@ app.post("/api/ask-question", async (req, res) => {
 
     const contextNotes = text ? text.slice(0, 60000) : "No notes uploaded yet.";
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: GEMINI_TEXT_MODEL,
       contents: `You are StudyGen, an intelligent academic tutor. Your task is to answer the student's question accurately.
 If the answer can be found in the provided study notes, prioritize those. If the answer is not in the notes, use your general academic knowledge to provide an accurate answer, but explicitly add a polite note stating "*(Note: This detail was reinforced using general study knowledge as it wasn't fully detailed in your uploaded notes)*".
 
@@ -453,11 +475,12 @@ Student's question:
 // 3. Quiz Generator Endpoint (JSON Response with strict schema)
 app.post("/api/generate-quiz", async (req, res) => {
   try {
+    if (!ensureGeminiConfigured(res)) return;
     const { text, numQuestions = 5 } = req.body;
     const contextNotes = text ? text.slice(0, 60000) : "General high school and college-level essential topics in science, math, and general knowledge.";
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: GEMINI_TEXT_MODEL,
       contents: `Generate a student quiz with exactly ${numQuestions} questions based on the following material. 
 Include a mix of:
 - Multiple Choice Questions (MCQs - with exactly 4 options labeled A, B, C, D)
@@ -509,11 +532,12 @@ ${contextNotes}`,
 // 4. Flashcard Generator Endpoint (JSON Response)
 app.post("/api/generate-flashcards", async (req, res) => {
   try {
+    if (!ensureGeminiConfigured(res)) return;
     const { text } = req.body;
     const contextNotes = text ? text.slice(0, 60000) : "Essential general study terms and key academic concepts.";
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: GEMINI_TEXT_MODEL,
       contents: `Extract exactly 8 key terms, concepts, or formulas from the provided text and turn them into question-and-answer revision flashcards. The front of the flashcard should contain a clear question or prompt, and the back should contain a crisp, highly informative answer.
 
 Study material:
@@ -552,13 +576,14 @@ ${contextNotes}`,
 // 5. Explain Like I'm 10 Endpoint
 app.post("/api/explain-like-im-10", async (req, res) => {
   try {
+    if (!ensureGeminiConfigured(res)) return;
     const { topic, text } = req.body;
     if (!topic) {
       return res.status(400).json({ error: "Please enter a topic to explain." });
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: GEMINI_TEXT_MODEL,
       contents: `You are a warm, imaginative teacher. Explain the following concept like I am a 10-year-old child (ELI10).
 Use clever real-world analogies, high-energy storytelling, and extremely simple vocabulary. Break it down so that it's intuitive and immediately understandable, without watering down the underlying truth.
 
@@ -581,6 +606,7 @@ Keep the tone extremely fun, starry (using words like ✨ magic, spark, universe
 // 6. Study Planner Endpoint
 app.post("/api/study-planner", async (req, res) => {
   try {
+    if (!ensureGeminiConfigured(res)) return;
     const { subjects, examDate, dailyHours = 2 } = req.body;
     if (!subjects || !Array.isArray(subjects) || subjects.length === 0) {
       return res.status(400).json({ error: "Please provide a list of subjects." });
@@ -590,7 +616,7 @@ app.post("/api/study-planner", async (req, res) => {
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: GEMINI_TEXT_MODEL,
       contents: `You are an expert study success counselor. Create a comprehensive, day-by-day study calendar/timetable to help a student prepare for their upcoming exams.
 
 Exams details:
@@ -649,13 +675,14 @@ Also include a general list of top tips for exam success.`,
 // 7. Interactive Voice Agent Chat API
 app.post("/api/voice-agent", async (req, res) => {
   try {
+    if (!ensureGeminiConfigured(res)) return;
     const { message, contextText = "" } = req.body;
     if (!message) {
       return res.status(400).json({ error: "No message provided." });
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: GEMINI_TEXT_MODEL,
       contents: `You are StudyGen's Live Voice Agent – an enthusiastic, supportive, and brilliant academic AI tutor. You are holding a real-time, voice-based interactive session with a student.
 
 CRITICAL USER EXPERIENCE MANDATE: The user is listening via real-time Text-to-Speech audio. You MUST keep your responses incredibly brief, conversational, and punchy. Answer in LESS THAN 25 words and only 1-2 short sentences. Do not use lists, bullet points, markdown bold tags, or complex definitions. Just speak naturally, direct, and with stellar encouraging energy! Keep it extremely fast.
@@ -681,6 +708,7 @@ Student says:
 // 8. Visual AI Note Analyzer Endpoint
 app.post("/api/analyze-image", async (req, res) => {
   try {
+    if (!ensureGeminiConfigured(res)) return;
     const { image, prompt } = req.body;
     if (!image) {
       return res.status(400).json({ error: "Please upload an image to analyze." });
@@ -709,7 +737,7 @@ app.post("/api/analyze-image", async (req, res) => {
     };
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.1-pro-preview",
+      model: GEMINI_TEXT_MODEL,
       contents: {
         parts: [imagePart, textPart]
       },
@@ -756,7 +784,7 @@ function setupLiveVoiceSession(server: any) {
           }
 
           sessionPromise = ai.live.connect({
-            model: "gemini-3.1-flash-live-preview",
+            model: GEMINI_LIVE_MODEL,
             config: {
               responseModalities: ["AUDIO"] as any,
               speechConfig: {
